@@ -1,5 +1,15 @@
 This project created for ELE336 Microprocessors and x86 Assembly course laboratory final project.
 
+I named it ed. It comes from an UNIX line editor which is developed in 1969 by Ken Thompson.
+
+
+You can use it with DOSBOX:
+
+1) Open DOSBOX.
+2) Write $ed and press enter.
+3) You are ready to use it. 
+
+
 Some lines of source code are deleted for educational purpose.
 Don't be sad. I will share all part of code separately with their algorithms in x86 Assembly Examples repository.
 
