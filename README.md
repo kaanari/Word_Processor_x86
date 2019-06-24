@@ -1,5 +1,5 @@
 This project created for ELE336 Microprocessors and x86 Assembly course laboratory final project.
-
+![Homepage](img/editor.png?raw=true "Homepage")
 I named it ed. It comes from an UNIX line editor which is developed in 1969 by Ken Thompson.
 
 
