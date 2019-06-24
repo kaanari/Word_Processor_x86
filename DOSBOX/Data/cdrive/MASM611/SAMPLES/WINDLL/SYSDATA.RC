@@ -1,0 +1,42 @@
+#include <windows.h>
+#include "sysdata.h"
+
+SysIcon ICON sysdata.ico
+
+SysData DIALOG 20, 20, 140, 165
+	STYLE WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX
+	CLASS "SysData"
+	CAPTION "System Information"
+	{
+	CTEXT "MASM Sample Program Using",               -1, 0, 12, 140, 8
+	CTEXT "the Windows API and SYSINFO.DLL",         -1, 0, 22, 140, 8 
+	CTEXT,"",                                 TIME_TEXT, 0, 38, 140, 8 
+	CTEXT,"",                                 DATE_TEXT, 0, 48, 140, 8
+
+	LTEXT "Windows version",                        -1, 10,  70, 65, 8
+	RTEXT "",                              WINVERSION,  85,  70, 45, 8
+	LTEXT "DOS version",                            -1, 10,  80, 65, 8
+	RTEXT "",                               DOSVERSION, 85,  80, 45, 8
+	LTEXT "Number of Floppies",                     -1, 10,  90, 65, 8
+	RTEXT "",                               FLOPPIES,   85,  90, 45, 8
+	LTEXT "Video Mode",                             -1, 10, 100, 65, 8
+	RTEXT "",                               VIDEOMODE,  85, 100, 45, 8
+	LTEXT "Processor type",                         -1, 10, 110, 65, 8
+	RTEXT "",                               PROCTYPE,   85, 110, 45, 8
+	LTEXT "Math Coprocessor",                       -1, 10, 120, 65, 8
+	RTEXT "",                                COPROC,    85, 120, 45, 8
+	LTEXT "ROM-BIOS Release",                       -1, 10, 130, 65, 8
+	RTEXT   "",                             ROMBIOS,    85, 130, 45, 8
+	LTEXT "Caps Lock",                              -1, 10, 140, 40, 8
+	RTEXT "",                               CAPLOCK,    50, 140, 15, 8
+	LTEXT "Num Lock",                               -1, 75, 140, 40, 8
+	RTEXT "",                               NUMLOCK,   115, 140, 15, 8
+	LTEXT "Shift Down",                            -1, 10, 150, 40, 8
+	RTEXT "",                               SHIFTS,    50, 150, 15, 8
+	LTEXT "Ctrl Down",                            -1, 75, 150, 40, 8
+	RTEXT "",                               CONTROL,   115, 150, 15, 8
+
+
+
+	}
+

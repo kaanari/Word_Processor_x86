@@ -1,0 +1,808 @@
+Microsoft (R) Macro Assembler Version 6.11		    02/09/15 15:55:18
+COMMON.asm						     Page 1 - 1
+
+
+				        .MODEL  small, pascal
+				        INCLUDE demo.inc
+ = 0800			      C BUFFERSIZE      EQU     2048            ; Buffer size in bytes for disk I/O
+			      C 
+ = 0000			      C MDA             EQU     0               ; Adapter constants
+ = 0001			      C CGA             EQU     1
+ = 0002			      C MCGA            EQU     2
+ = 0003			      C EGA             EQU     3
+ = 0004			      C VGA             EQU     4
+ = 0000			      C MONO            EQU     0               ; Display constants
+ = 0001			      C COLOR           EQU     1
+			      C 
+ = 0008			      C BACKSP          EQU     08              ; ASCII code for BACKSPACE key
+ = 0009			      C TAB             EQU     09              ; ASCII code for TAB key
+ = 000A			      C LF              EQU     10              ; ASCII code for line feed
+ = 000D			      C CR              EQU     13              ; ASCII code for ENTER key
+ = 001B			      C ESCAPE          EQU     27              ; ASCII code for ESCAPE key
+ = 004B			      C LEFT            EQU     75              ; Scan code for LEFT arrow
+ = 0A0D			      C CRLF            EQU     0A0Dh           ; Value for carriage return/line feed
+			      C 
+			      C ; Bit masks for shift status
+ = 0080			      C shIns           EQU   80h
+ = 0040			      C shCaps          EQU   40h
+ = 0020			      C shNum           EQU   20h
+ = 0010			      C shScroll        EQU   10h
+ = 0008			      C shAlt           EQU   08h
+ = 0004			      C shCtl           EQU   04h
+ = 0002			      C shLeft          EQU   02h
+ = 0001			      C shRight         EQU   01h
+			      C 
+			      C ;* LoadPtr - Macro to load far address into segment:register pair, or
+			      C ;* near address into register.
+			      C ;*
+			      C ;* Params:  sgmnt - Segment to be loaded with segment address
+			      C ;*          reg - Register to be loaded with offset address
+			      C ;*          pointer - Pointer to address
+			      C ;*
+			      C ;* Shows:   Instructions - lds     les
+			      C ;*          Directives - MACRO     IF        IFIDNI     ELSE
+			      C ;*                       ELSE      IFENDIF   .ERR       ENDM
+			      C ;*          Operators - < >       ;;
+			      C 
+			      C LoadPtr MACRO sgmnt, reg, pointer       ;; Macro definition
+			      C     IF @DataSize                        ; If far pointer, and
+			      C         IFIDNI <sgmnt>, <ds>            ;;   if 1st argument is DS,
+			      C             lds reg, pointer            ;;   load DS:reg with far address
+			      C         ELSEIFIDNI <sgmnt>, <es>        ;;   or if 1st argument is ES,
+			      C             les reg, pointer            ;;   load ES:reg with far address
+			      C         ELSE                            ;; Generate error if not DS or ES
+			      C             .ERR <First argument must be DS or ES>
+			      C         ENDIF
+			      C     ELSE                                ;; If near pointer,
+			      C         IFIDNI <sgmnt>, <es>            ;;   and if segment is ES,
+			      C             push ds                     ;   ensure ES points to
+			      C             pop  es                     ;   same segment as DS
+			      C         ENDIF
+			      C         mov reg, pointer                ;; Then load reg with near address
+			      C     ENDIF
+			      C ENDM
+			      C 
+			      C ;* GetVidOffset - Macro to determine offset in video segment that corresponds
+			      C ;* to given screen coordinates.
+			      C ;*
+			      C ;* Params:  Row - Screen row (top line = 0)
+			      C ;*          Col - Screen column (leftmost column = 0)
+			      C 
+			      C GetVidOffset MACRO Row, Col
+			      C     mov ax, Row
+			      C     mov bl, vconfig.cols
+			      C     mul bl
+			      C     add ax, Col
+			      C     shl ax, 1
+			      C ENDM
+			      C 
+			      C ;* Vector - Macro to read current interrupt vector, store it, and replace it.
+			      C ;*
+			      C ;* Shows:   Equates - @CodeSize     @code
+			      C ;*
+			      C ;* Params:  num - Vector number
+			      C ;*          old - Pointer to doubleword for storing old vector
+			      C ;*          new - Pointer to new handler
+			      C 
+			      C Vector MACRO num, old, new              ;; Macro definition
+			      C     push ds                             ; Save DS and ES registers
+			      C     push es
+			      C     mov  ah, 35h                        ; AH = DOS function number
+			      C     mov  al, num                        ;; AL = interrupt number
+			      C     int  21h                            ; Get Interrupt Vector
+			      C     mov  WORD PTR old[0], bx            ;; Store it
+			      C     mov  WORD PTR old[2], es
+			      C     IF @CodeSize                        ; If medium or large model,
+			      C         lds dx, new                     ;;    load DS from parameter
+			      C     ELSE
+			      C         mov bx, @code                   ;; Else ensure DS points to
+			      C         mov ds, bx                      ;    to code segment
+			      C         mov dx, WORD PTR new            ;; DS:DX equals new vector
+			      C     ENDIF
+			      C     mov ah, 25h                         ; AH = DOS function number
+			      C     int 21h                             ; Set Interrupt Vector
+			      C     pop es                              ; Restore ES and DS
+			      C     pop ds
+			      C ENDM
+			      C 
+			      C PBYTE   TYPEDEF      PTR BYTE   ; Pointer to byte
+			      C PWORD   TYPEDEF      PTR WORD   ; Pointer to word
+			      C PSWORD  TYPEDEF      PTR SWORD  ; Pointer to integer
+			      C PDWORD  TYPEDEF      PTR DWORD  ; Pointer to integer
+			      C NPBYTE  TYPEDEF NEAR PTR BYTE   ; Near pointer to byte
+			      C FPBYTE  TYPEDEF FAR  PTR BYTE   ; Far pointer to byte
+			      C FPVOID  TYPEDEF FAR  PTR        ; Far pointer to void
+			      C PSEG    TYPEDEF WORD            ; Segment value
+			      C 
+			      C ; Structure for video configuration
+ 0008			      C VIDCONFIG       STRUCT
+ 0000  00		      C   mode          BYTE    ?
+ 0001  00		      C   dpage         BYTE    ?
+ 0002  00		      C   rows          BYTE    ?
+ 0003  00		      C   cols          BYTE    ?
+ 0004  00		      C   display       BYTE    ?
+ 0005  00		      C   adapter       BYTE    ?
+ 0006  0000		      C   sgmnt         WORD    ?
+			      C VIDCONFIG       ENDS
+			      C PVIDCONFIG      TYPEDEF PTR VIDCONFIG
+			      C 
+			      C ; Structure for FindFirst and FindNext
+ 002B			      C FILEINFO        STRUCT
+ 0000  0015 [		      C   pad           BYTE    21 DUP (?)      ; pad to 43 bytes
+        00
+       ]
+ 0015  00		      C   attrib        BYTE    ?               ; file attribute
+ 0016  0000		      C   time          WORD    ?               ; file time
+ 0018  0000		      C   date          WORD    ?               ; file date
+ 001A  00000000		      C   count         DWORD   ?               ; file size
+ 001E  000D [		      C   filename      BYTE    13 DUP (?)      ; filename
+        00
+       ]
+			      C FILEINFO        ENDS
+			      C PFILEINFO       TYPEDEF PTR FILEINFO
+			      C 
+			      C ; Structure for disk statistics
+ 0008			      C DISKSTAT        STRUCT
+ 0000  0000		      C   total         WORD    ?               ; Total clusters
+ 0002  0000		      C   avail         WORD    ?               ; Available clusters
+ 0004  0000		      C   sects         WORD    ?               ; Sectors per cluster
+ 0006  0000		      C   bytes         WORD    ?               ; Bytes per sector
+			      C DISKSTAT        ENDS
+			      C PDISKSTAT       TYPEDEF PTR DISKSTAT
+			      C 
+			      C ; Structure for parameter block
+ 000E			      C PARMBLK         STRUCT
+ 0000  0000		      C   env           PSEG    ?               ; Segment of environment block
+ 0002  00000000		      C   taddr         FPBYTE  ?               ; Segment:offset address of tail
+ 0006  00000000		      C   fcb1          FPBYTE  ?               ; Segment:offset address of 1st FCB
+ 000A  00000000		      C   fcb2          FPBYTE  ?               ; Segment:offset address of 2nd FCB
+			      C PARMBLK         ENDS
+			      C PPARMBLK        TYPEDEF PTR PARMBLK
+			      C 
+			      C ; Prototypes from COMMON.ASM
+			      C GetVer          PROTO PASCAL
+			      C GetVidConfig    PROTO PASCAL 
+			      C StrWrite        PROTO PASCAL Row:WORD, Col:WORD, Sptr:PBYTE
+			      C ClearBox        PROTO PASCAL Attr:WORD, Row1:WORD, Col1:WORD,
+			      C                                         Row2:WORD, Col2:WORD
+			      C DisableCga      PROTO PASCAL 
+			      C EnableCga       PROTO PASCAL 
+			      C SetCurPos       PROTO PASCAL Row:WORD, Col:WORD
+			      C GetCurPos       PROTO PASCAL 
+			      C StrInput        PROTO PASCAL Row:WORD, Col:WORD, Max:WORD, Sptr:PBYTE
+			      C 
+			      C ; Prototypes from MISC.ASM
+			      C WinOpen         PROTO PASCAL Row1:WORD, Col1:WORD,
+			      C                              Row2:WORD, Col2:WORD, Attr:WORD
+			      C WinClose        PROTO PASCAL Adr:WORD
+			      C SetCurSize      PROTO PASCAL Scan1:WORD, Scan2:WORD
+			      C GetCurSize      PROTO PASCAL 
+			      C GetShift        PROTO PASCAL 
+			      C GetMem          PROTO PASCAL
+			      C GetKeyClock     PROTO PASCAL Row:WORD, Col:WORD
+			      C VeriAnsi        PROTO PASCAL 
+			      C VeriPrint       PROTO PASCAL 
+			      C VeriCop         PROTO PASCAL
+			      C SetLineMode     PROTO PASCAL Line:WORD
+			      C Pause           PROTO PASCAL Duration:WORD
+			      C Sound           PROTO PASCAL Freq:WORD, Duration:WORD
+			      C WriteTTY        PROTO PASCAL Sptr:PBYTE, icolor:WORD
+			      C Colors          PROTO PASCAL Logic:WORD, Attr:WORD,
+			      C                              Row1:WORD, Col1:WORD, Row2:WORD, Col2:WORD
+			      C Exec            PROTO PASCAL Spec:PBYTE, Block:PPARMBLK,
+			      C                              CtrBrk:PTR FAR,
+			      C                              CtrlC:PTR FAR,
+			      C                              Criterr:PTR FAR
+			      C BinToHex        PROTO PASCAL Num:WORD, Sptr:PBYTE
+			      C NewBlockSize    PROTO PASCAL Adr:WORD, Resize:WORD
+			      C Initialize      PROTO PASCAL
+			      C                 EXTERNDEF    IntToAsc:PROC
+			      C 
+			      C 
+			      C ; Prototypes from MATH.ASM
+			      C AddLong         PROTO PASCAL Long1:SDWORD, Long2:SDWORD
+			      C SubLong         PROTO PASCAL Long1:SDWORD, Long2:SDWORD
+			      C ImulLong        PROTO PASCAL Long1:SDWORD, Long2:SDWORD
+			      C MulLong         PROTO PASCAL Long1:DWORD, Long2:DWORD
+			      C IdivLong        PROTO PASCAL Long1:SDWORD, Short2:SWORD, Remn:PSWORD
+			      C DivLong         PROTO PASCAL Long1:DWORD, Short2:WORD, Remn:PWORD
+			      C Quadratic       PROTO PASCAL aa:DWORD, bb:DWORD, cc:DWORD,
+			      C                              r1:PDWORD, r2:PDWORD
+			      C 
+			      C ; Prototypes from FILE.ASM
+			      C ChangeDrive     PROTO PASCAL Drive:WORD
+			      C GetDiskSize     PROTO PASCAL Drive:WORD, Disk:PDISKSTAT
+			      C SetDta          PROTO PASCAL Dta:FPBYTE
+			      C GetDta          PROTO PASCAL Dta:FPBYTE
+			      C ReadCharAttr    PROTO PASCAL Attr:PWORD
+			      C GetCurDir       PROTO PASCAL Spec:PBYTE
+			      C GetCurDrive     PROTO PASCAL
+			      C CopyFile        PROTO PASCAL Imode:WORD, Fspec1:PBYTE, Fspec2:PBYTE
+			      C DelFile         PROTO PASCAL Fspec:PBYTE
+			      C MakeDir         PROTO PASCAL Pspec:PBYTE
+			      C RemoveDir       PROTO PASCAL Pspec:PBYTE
+			      C ChangeDir       PROTO PASCAL Pspec:PBYTE
+			      C GetAttribute    PROTO PASCAL Fspec:PBYTE
+			      C SetAttribute    PROTO PASCAL Attr:WORD, Fspec:PBYTE
+			      C RenameFile      PROTO PASCAL Fspec1:PBYTE, Fspec2:PBYTE
+			      C GetFileTime     PROTO PASCAL Handle:WORD, Sptr:PBYTE
+			      C FindFirst       PROTO PASCAL Attr:WORD, Fspec:PBYTE, Finfo:PFILEINFO
+			      C FindNext        PROTO PASCAL Finfo:PFILEINFO
+			      C UniqueFile      PROTO PASCAL Attr:WORD, Pspec:PBYTE
+			      C OpenFile        PROTO PASCAL Access:WORD, Fspec:PBYTE
+			      C CloseFile       PROTO PASCAL Handle:WORD
+			      C CreateFile      PROTO PASCAL Attr:WORD, Fspec:PBYTE
+			      C CreateNewFile   PROTO PASCAL Attr:WORD, Fspec:PBYTE
+			      C ReadFile        PROTO PASCAL Handle:WORD, Len:WORD, Pbuff:PBYTE
+			      C WriteFile       PROTO PASCAL Handle:WORD, Sptr:PBYTE
+			      C Rewind          PROTO PASCAL Handle:WORD
+			      C GetFileSize     PROTO PASCAL Handle:WORD
+			      C GetStr          PROTO PASCAL Strbuf:PBYTE, Maxlen:WORD
+			      C StrCompare      PROTO PASCAL Sptr1:PBYTE, Sptr2:PBYTE, Len:WORD
+			      C StrFindChar     PROTO PASCAL Ichar:SBYTE, Sptr:PBYTE, Direct:WORD
+			      C 
+			      C 
+			      C ;* Global variables defined with EXTERNDEF are public in the module
+			      C ;* in which they are defined, and external in other modules in which
+			      C ;* they are used.
+			      C ;*
+			      C ;* Shows:   Directive             - EXTERNDEF
+			      C ;*          Predefined text macro - @CurSeg
+			      C 
+ 0000			      C         .DATA
+			      C         EXTERNDEF   vconfig:VIDCONFIG   ; Video configuration
+			      C         EXTERNDEF   _psp:PSEG           ; Segment of Program Segment Prefix
+			      C         EXTERNDEF   _env:PSEG           ; Segment of environment block
+ 0000			      C @CurSeg ENDS                            ; End .DATA so any subsequent
+			      C                                         ;   include is outside segment
+			      C 
+
+ 0000				        .DATA
+ 0000 00 00 00 00 00 00		vconfig VIDCONFIG <>           ; Global video configuration structure
+       0000
+
+ 0000				        .CODE
+
+				;* GetVidConfig - Determines current video configuration and initializes
+				;* the vconfig structure.
+				;*
+				;* Shows:   BIOS Interrupt - 10h, Function 0 (Set Video Mode)
+				;*                           10h, Function 0Fh (Get Current Video Mode)
+				;*                           10h, Function 1Ah (Video Display Combination)
+				;*
+				;* Uses:    vconfig - Video configuration structure, declared in the
+				;*          DEMO.INC include file.
+				;*
+				;* Params:  None
+				;*
+				;* Return:  None
+
+ 0000				GetVidConfig PROC
+
+ 0000  B8 1A00			        mov     ax, 1A00h               ; Get video info for VGA
+ 0003  CD 10			        int     10h
+ 0005				chkVGA:
+ 0005  3C 1A			        cmp     al, 1Ah                 ; Is VGA or MCGA present?
+ 0007  75 29			        jne     chkEGA                  ; No?  Then check for EGA
+
+ 0009  80 FB 02			        cmp     bl, 2                   ; If VGA exists as secondary adapter,
+ 000C  74 4B			        je      isCGA                   ;   check for CGA and mono as primary
+ 000E  72 55			        jb      isMONO
+ 0010  80 FB 05			        cmp     bl, 5                   ; If EGA is primary, do normal
+ 0013  76 1D			        jbe     chkEGA                  ;   EGA checking
+ 0015				chkMCGA:
+ 0015  C6 06 0005 R 02		        mov     vconfig.adapter, MCGA   ; Yes?  Assume MCGA
+ 001A  C6 06 0004 R 01		        mov     vconfig.display, COLOR
+ 001F  80 FB 08			        cmp     bl, 8                   ; Correct assumption?
+ 0022  77 4B			        ja      gotmode                 ; Yes?  Continue
+ 0024				isVGA:
+ 0024  C6 06 0005 R 04		        mov     vconfig.adapter, VGA    ; Assume it's VGA color
+ 0029  74 44			        je      gotmode                 ; Yes?  Continue
+ 002B  C6 06 0004 R 00		        mov     vconfig.display, MONO   ; No?  Must be VGA mono
+ 0030  EB 3D			        jmp     gotmode                 ; Finished with VGA, so jump
+ 0032				chkEGA:
+ 0032  B4 12			        mov     ah, 12h                 ; Call EGA status function
+ 0034  B3 10			        mov     bl, 10h
+ 0036  2B C9			        sub     cx, cx                  ; Clear status bits
+ 0038  CD 10			        int     10h
+ 003A  E3 15			        jcxz    chkCGA                  ; If CX is unchanged, not EGA
+ 003C				isEGA:
+ 003C  C6 06 0005 R 03		        mov     vconfig.adapter, EGA    ; Set structure fields for EGA
+ 0041  C6 06 0004 R 00		        mov     vconfig.display, MONO   ; Assume EGA mono
+ 0046  0A FF			        or      bh, bh                  ; Correct assumption?
+ 0048  75 25			        jnz     gotmode                 ; Yes?  Continue
+ 004A  C6 06 0004 R 01		        mov     vconfig.display, COLOR  ; No?  Must be EGA color
+ 004F  EB 1E			        jmp     gotmode                 ; Finished with EGA, so jump
+ 0051				chkCGA:
+ 0051  CD 11			        int     11h                     ; Get equipment list
+ 0053  24 30			        and     al, 30h                 ; If bits 4-5 set, monochrome
+ 0055  3C 30			        cmp     al, 30h                 ; Monochrome text mode?
+ 0057  74 0C			        je      isMONO                  ; Yes?  Continue
+ 0059				isCGA:
+ 0059  C6 06 0005 R 01		        mov     vconfig.adapter, CGA    ; No?  Must be CGA
+ 005E  C6 06 0004 R 01		        mov     vconfig.display, COLOR
+ 0063  EB 0A			        jmp     gotmode
+ 0065				isMONO:
+ 0065  C6 06 0005 R 00		        mov     vconfig.adapter, MDA    ; Set MONO
+ 006A  C6 06 0004 R 00		        mov     vconfig.display, MONO
+ 006F				gotmode:
+ 006F  B4 0F			        mov     ah, 0Fh
+ 0071  CD 10			        int     10h                     ; Get current mode
+ 0073  A2 0000 R		        mov     vconfig.mode, al        ; Record mode
+ 0076  88 3E 0001 R		        mov     vconfig.dpage, bh       ;   and current page
+ 007A  A0 0004 R		        mov     al, vconfig.display     ; Multiply display value
+ 007D  98			        cbw                             ;   (which is either 0 or 1)
+ 007E  BB 0800			        mov     bx, 800h                ;   by 800h, then add to 0B000h
+ 0081  F7 E3			        mul     bx                      ;   for segment address of
+ 0083  05 B000			        add     ax, 0B000h              ;   video buffer
+ 0086  02 26 0001 R		        add     ah, vconfig.dpage       ; Adding display page gives
+ 008A  A3 0006 R		        mov     vconfig.sgmnt, ax       ;   address of current page
+
+ 008D  2B C0			        sub     ax, ax
+ 008F  8E C0			        mov     es, ax
+ 0091  26: A0 044A		        mov     al, es:[44Ah]           ; Get number of display cols
+ 0095  A2 0003 R		        mov     vconfig.cols, al        ; Store in structure
+ 0098  C6 06 0002 R 18		        mov     vconfig.rows, 24        ; Assume bottom row # = 24
+ 009D  80 3E 0005 R 03		        cmp     vconfig.adapter, EGA    ; EGA or VGA?
+ 00A2  7C 0D			        jl      exit                    ; No?  Exit
+ 00A4  B8 1130			        mov     ax, 1130h               ; Yes?  Request character info
+ 00A7  2A FF			        sub     bh, bh                  ; Set BH to valid value
+ 00A9  55			        push    bp                      ; BP will change, so save it
+ 00AA  CD 10			        int     10h                     ; Get number of rows/screen
+ 00AC  88 16 0002 R		        mov     vconfig.rows, dl        ; Keep in structure
+ 00B0  5D			        pop     bp                      ; Restore BP
+ 00B1				exit:
+ 00B1  C3			        ret
+
+ 00B2				GetVidConfig ENDP
+
+
+				;* GetCurPos - Gets current cursor position.
+				;*
+				;* Uses:    vconfig - Video configuration structure (initialized
+				;*          by calling the GetVidConfig procedure)
+				;*
+				;* Params:  None
+				;*
+				;* Return:  Short integer with high byte = row, low byte = column
+
+ 00B2				GetCurPos PROC USES bx dx
+
+ 00B2  53		   *	    push   bx
+ 00B3  52		   *	    push   dx
+ 00B4  B4 03			        mov     ah, 3                   ; Function 3
+ 00B6  8A 3E 0001 R		        mov     bh, vconfig.dpage
+ 00BA  CD 10			        int     10h                     ; Get cursor position
+ 00BC  8B C2			        mov     ax, dx
+				        ret
+ 00BE  5A		   *	    pop    dx
+ 00BF  5B		   *	    pop    bx
+ 00C0  C3		   *	    ret    00000h
+
+ 00C1				GetCurPos ENDP
+
+
+				;* SetCurPos - Sets cursor position.
+				;*
+				;* Shows:   BIOS Interrupt - 10h, Function 2 (Set Cursor Position)
+				;*
+				;* Uses:    vconfig - Video configuration structure (initialized
+				;*          by calling the GetVidConfig procedure)
+				;*
+				;* Params:  Row - Target row
+				;*          Col - Target column
+				;*
+				;* Return:  None
+
+ 00C1				SetCurPos PROC USES bx dx,
+				        Row:WORD,
+				        Col:WORD
+
+ 00C1  55		   *	    push   bp
+ 00C2  8B EC		   *	    mov    bp, sp
+ 00C4  53		   *	    push   bx
+ 00C5  52		   *	    push   dx
+ 00C6  8A 76 06			        mov     dh, BYTE PTR Row        ; DH = row
+ 00C9  8A 56 04			        mov     dl, BYTE ptr Col        ; DL = column
+ 00CC  B4 02			        mov     ah, 2                   ; Function 2
+ 00CE  8A 3E 0001 R		        mov     bh, vconfig.dpage       ; Current page
+ 00D2  CD 10			        int     10h                     ; Set cursor position
+				        ret
+ 00D4  5A		   *	    pop    dx
+ 00D5  5B		   *	    pop    bx
+ 00D6  5D		   *	    pop    bp
+ 00D7  C2 0004		   *	    ret    00004h
+
+ 00DA				SetCurPos ENDP
+
+
+				;* StrWrite - Writes ASCIIZ string to video memory at specified row/column.
+				;*
+				;* Shows:   Instructions - lodsb     stosb
+				;*
+				;* Uses:    vconfig - Video configuration structure (initialized
+				;*          by calling the GetVidConfig procedure)
+				;*
+				;* Params:  Row - Row coordinate
+				;*          Col - Column coordinate
+				;*          Sptr - Pointer to string
+				;*
+				;* Return:  None
+
+ 00DA				StrWrite PROC USES ds si di,
+				        Row:WORD,
+				        Col:WORD,
+				        Sptr:PTR BYTE
+
+				        GetVidOffset Row, Col           ; Get video offset for these coords
+ 00DA  55		   *	    push   bp
+ 00DB  8B EC		   *	    mov    bp, sp
+ 00DD  1E		   *	    push   ds
+ 00DE  56		   *	    push   si
+ 00DF  57		   *	    push   di
+ 00E0  8B 46 08		     1	    mov ax, Row
+ 00E3  8A 1E 0003 R	     1	    mov bl, vconfig.cols
+ 00E7  F6 E3		     1	    mul bl
+ 00E9  03 46 06		     1	    add ax, Col
+ 00EC  D1 E0		     1	    shl ax, 1
+ 00EE  8B F8			        mov     di, ax                  ; Copy to DI
+				        LoadPtr ds, si, Sptr            ; DS:SI points to string
+ 00F0  8B 76 04		     1	        mov si, Sptr                
+ 00F3  8E 06 0006 R		        mov     es, vconfig.sgmnt       ; ES:DI points to video RAM
+				        .WHILE  1                       ; Loop forever (or until break)
+ 00F7			   *@C0001:
+ 00F7  AC			        lodsb                           ; Get 1 character from string
+				        .BREAK .IF al == 0              ; Quit if null terminator
+ 00F8  0A C0		   *	    or	al, al
+ 00FA  74 1C		   *	    je     @C0002
+
+				; For CGA systems, StrWrite waits for the video to begin a horizontal
+				; retrace before writing a character to memory. This avoids the problem
+				; of video snow inherent with some (though not all) color/graphics adapters.
+				; It also demonstrates a somewhat different approach to the problem than the
+				; one taken in the WinOpen and WinClose procedures.
+
+				        .IF vconfig.adapter != CGA      ; If not CGA, skip this step
+ 00FC  80 3E 0005 R 01	   *	    cmp    vconfig . adapter, CGA
+ 0101  74 10		   *	    je     @C0004
+ 0103  50			        push    ax                      ; Save character
+ 0104  BA 03DA			        mov     dx, 3DAh                ; Address of status register
+ 0107  FA			        cli                             ; Disallow interruptions
+				        .REPEAT
+ 0108			   *@C0006:
+ 0108  EC			        in      al, dx                  ; Read current video status
+				        .UNTIL  !(al & 1)               ; Until horizontal retrace done
+ 0109  A8 01		   *	    test   al, 001h
+ 010B  75 FB		   *	    jne    @C0006
+
+				        .REPEAT
+ 010D			   *@C0008:
+ 010D  EC			        in      al, dx                  ; No?  Read status again
+				        .UNTIL  al & 1                  ; Until retrace starts
+ 010E  A8 01		   *	    test   al, 001h
+ 0110  74 FB		   *	    je     @C0008
+ 0112  58			        pop     ax                      ; Recover character
+				        .ENDIF  ; CGA only
+
+ 0113			   *@C0004:
+ 0113  AA			        stosb                           ; Write char to video buffer
+ 0114  FB			        sti                             ; Reenable interrupts in case CGA
+ 0115  47			        inc     di                      ; Skip attribute byte
+				        .ENDW
+ 0116  EB DF		   *	    jmp    @C0001
+ 0118			   *@C0002:
+				        ret
+ 0118  5F		   *	    pop    di
+ 0119  5E		   *	    pop    si
+ 011A  1F		   *	    pop    ds
+ 011B  5D		   *	    pop    bp
+ 011C  C2 0006		   *	    ret    00006h
+
+ 011F				StrWrite ENDP
+
+
+				;* StrInput - Gets input string from keyboard using BIOS. Signals idle
+				;* state by calling interrupt 28h while polling for keypress, making
+				;* the procedure useful in TSR programs. Terminates when ENTER or ESC
+				;* keys pressed.
+				;*
+				;* Shows:   DOS interrupt - Interrupt 28h (DOS Idle Interrupt)
+				;*
+				;* Params:  Row - Row coordinate
+				;*          Col - Column coordinate
+				;*          Max - Maximum allowable string length
+				;*          Sptr - Pointer to string
+				;*
+				;* Return:  Short integer with terminating char
+
+ 011F				StrInput PROC USES ds si,
+				        Row:WORD,
+				        Col:WORD,
+				        Max:WORD,
+				        Sptr:PBYTE
+
+				        LoadPtr ds, si, Sptr            ; DS:SI points to string
+ 011F  55		   *	    push   bp
+ 0120  8B EC		   *	    mov    bp, sp
+ 0122  1E		   *	    push   ds
+ 0123  56		   *	    push   si
+ 0124  8B 76 04		     1	        mov si, Sptr                
+ 0127  01 76 06			        add     Max, si
+ 012A  FF 4E 06			        dec     Max                     ; MAX now points to string limit
+
+				        .WHILE  1                       ; Get key until break or continue
+ 012D			   *@C000B:
+ 012D				loop1:
+				        INVOKE  StrWrite,               ; Display input string
+				                Row,
+				                Col,
+				                si
+ 012D  FF 76 0A		   *	    push   word  ptr ss:[bp]+0000Ah
+ 0130  FF 76 08		   *	    push   word  ptr ss:[bp]+00008h
+ 0133  56		   *	    push   si
+ 0134  E8 FFA3		   *	    call   StrWrite
+ 0137  8B DE			        mov     bx, si
+ 0139  8B 56 08			        mov     dx, Col                 ; DL = cursor column
+
+				        .WHILE  (BYTE PTR [bx] != 0)    ; Scan string for null terminator
+ 013C  EB 02		   *	    jmp    @C000C
+ 013E			   *@C000D:
+ 013E  43			        inc     bx                      ; Else try next character
+ 013F  42			        inc     dx                      ;   and increment cursor column
+				        .ENDW
+ 0140			   *@C000C:
+ 0140  80 3F 00		   *	    cmp    byte ptr [bx], 000h
+ 0143  75 F9		   *	    jne    @C000D
+
+				; Set cursor position, pass row and column
+				        INVOKE  SetCurPos,
+				                Row,
+				                dx
+ 0145  FF 76 0A		   *	    push   word  ptr ss:[bp]+0000Ah
+ 0148  52		   *	    push   dx
+ 0149  E8 FF75		   *	    call   SetCurPos
+
+ 014C  E8 00A1			        call    GetKey                  ; Poll for keypress
+
+				        .BREAK  .IF al == ESCAPE || \   ; Exit if ESC or
+				                    al == CR            ;   ENTER key
+ 014F  3C 1B		   *	    cmp    al, ESCAPE
+ 0151  74 30		   *	    je     @C000F
+ 0153  3C 0D		   *	    cmp    al, CR
+ 0155  74 2C		   *	    je     @C000F
+
+				        .IF     al == BACKSP || \       ; If BACKSPACE or LEFT,
+				                ah == LEFT              ;   handle it
+ 0157  3C 08		   *	    cmp    al, BACKSP
+ 0159  74 05		   *	    je     @C0013
+ 015B  80 FC 4B		   *	    cmp    ah, LEFT
+ 015E  75 18		   *	    jne    @C0012
+ 0160			   *@C0013:
+ 0160  3B DE			        cmp     bx, si                  ; At first letter?
+ 0162  76 C9			        jbe     loop1                   ; Yes?  Ignore BACKSPACE
+ 0164  4B			        dec     bx                      ; No?  Point to preceding char
+ 0165  4A			        dec     dx                      ; Decrement column
+ 0166  C6 07 20			        mov     BYTE PTR [bx], ' '      ; Blank char
+ 0169  53			        push    bx                      ; Preserve pointer
+				        INVOKE  StrWrite,               ; Overwrite last char with blank
+				                Row,
+				                dx,
+				                bx
+ 016A  FF 76 0A		   *	    push   word  ptr ss:[bp]+0000Ah
+ 016D  52		   *	    push   dx
+ 016E  53		   *	    push   bx
+ 016F  E8 FF68		   *	    call   StrWrite
+
+ 0172  5B			        pop     bx
+ 0173  C6 07 00			        mov     BYTE PTR [bx], 0        ; Make last char the new terminator
+				        .CONTINUE                       ; Continue polling for keystrokes
+ 0176  EB B5		   *	    jmp    @C000B
+				        .ENDIF
+
+				        .CONTINUE .IF bx > Max          ; Ignore key if too many letters
+ 0178			   *@C0012:
+ 0178  3B 5E 06		   *	    cmp    bx, Max
+ 017B  77 B0		   *	    ja     @C000B
+ 017D  2A E4			        sub     ah, ah
+ 017F  89 07			        mov     [bx], ax                ; Store letter and null terminator
+				        .ENDW
+ 0181  EB AA		   *	    jmp    @C000B
+ 0183			   *@C000F:
+
+				        ret
+ 0183  5E		   *	    pop    si
+ 0184  1F		   *	    pop    ds
+ 0185  5D		   *	    pop    bp
+ 0186  C2 0008		   *	    ret    00008h
+
+ 0189				StrInput ENDP
+
+
+				;* ClearBox - Clears portion of screen with specified fill attribute.
+				;*
+				;* Shows:   BIOS Interrupt - 10h, Function 6 (Scroll Up)
+				;*
+				;* Params:  Attr - Fill attribute
+				;*          Row1 - Top screen row of cleared section
+				;*          Col1 - Left column of cleared section
+				;*          Row2 - Bottom screen row of cleared section
+				;*          Col2 - Right column of cleared section
+				;*
+				;* Return:  None
+
+ 0189				ClearBox PROC,
+				        Attr:WORD,
+				        Row1:WORD,
+				        Col1:WORD,
+				        Row2:WORD,
+				        Col2:WORD
+
+ 0189  55		   *	    push   bp
+ 018A  8B EC		   *	    mov    bp, sp
+ 018C  B8 0600			        mov     ax, 0600h               ; Scroll service
+ 018F  8A 7E 0C			        mov     bh, BYTE PTR Attr       ; BH = fill attribute
+ 0192  8A 6E 0A			        mov     ch, BYTE PTR Row1       ; CH = top row of clear area
+ 0195  8A 4E 08			        mov     cl, BYTE PTR Col1       ; CL = left column 
+ 0198  8A 76 06			        mov     dh, BYTE PTR Row2       ; DH = bottom row of clear area
+ 019B  8A 56 04			        mov     dl, BYTE PTR Col2       ; DL = right column
+ 019E  CD 10			        int     10h                     ; Clear screen by scrolling up
+				        ret
+ 01A0  5D		   *	    pop    bp
+ 01A1  C2 000A		   *	    ret    0000Ah
+
+ 01A4				ClearBox ENDP
+
+
+				;* DisableCga - Disables CGA video by reprogramming the control register.
+				;*
+				;* Shows:   Instructions - cli     sti
+				;*
+				;* Params:  None
+				;*
+				;* Return:  None
+
+ 01A4				DisableCga PROC USES ax cx dx           ; Preserve registers
+
+ 01A4  50		   *	    push   ax
+ 01A5  51		   *	    push   cx
+ 01A6  52		   *	    push   dx
+ 01A7  B9 FFFF			        mov     cx, -1                  ; Set maximum loop count
+ 01AA  BA 03DA			        mov     dx, 03DAh               ; Address of status register
+
+				        .REPEAT
+ 01AD			   *@C0017:
+ 01AD  EC			        in      al, dx                  ; Get video status
+				        .UNTILCXZ !(al & 8)             ; Until retrace end/timeout
+ 01AE  A8 08		   *	    test   al, 008h
+ 01B0  E1 FB		   *	    loope  @C0017
+ 01B2  FA			        cli                             ; Disallow interruptions
+ 01B3  B9 FFFF			        mov     cx, -1                  ; Reset loop count
+
+				        .REPEAT
+ 01B6			   *@C0018:
+ 01B6  EC			        in      al, dx                  ; Get video status
+				        .UNTILCXZ al & 8                ; Until retrace start/timeout
+ 01B7  A8 08		   *	    test   al, 008h
+ 01B9  E0 FB		   *	    loopne @C0018
+
+ 01BB  83 EA 02			        sub     dx, 2                   ; DX = address of control reg
+ 01BE  B0 01			        mov     al, 1                   ; Value to disable CGA video
+ 01C0  EE			        out     dx, al                  ; Disable video
+ 01C1  FB			        sti                             ; Reenable interrupts
+				        ret
+ 01C2  5A		   *	    pop    dx
+ 01C3  59		   *	    pop    cx
+ 01C4  58		   *	    pop    ax
+ 01C5  C3		   *	    ret    00000h
+
+ 01C6				DisableCga ENDP
+
+
+				;* EnableCga - Enables CGA video by reprogramming the control register.
+				;*
+				;* Params:  None
+				;*
+				;* Return:  None
+
+ 01C6				EnableCga PROC USES ax dx es                    ; Preserve registers
+
+ 01C6  50		   *	    push   ax
+ 01C7  52		   *	    push   dx
+ 01C8  06		   *	    push   es
+ 01C9  2B C0			        sub     ax, ax
+ 01CB  8E C0			        mov     es, ax                          ; Point ES to low memory
+ 01CD  26: A0 0465		        mov     al, es:[0465h]                  ; Get former mode setting
+ 01D1  BA 03D8			        mov     dx, 03D8h                       ; Address of control register
+ 01D4  EE			        out     dx, al                          ; Enable video
+				        ret
+ 01D5  07		   *	    pop    es
+ 01D6  5A		   *	    pop    dx
+ 01D7  58		   *	    pop    ax
+ 01D8  C3		   *	    ret    00000h
+
+ 01D9				EnableCga ENDP
+
+
+				;* GetVer - Gets DOS version.
+				;*
+				;* Shows:   DOS Function - 30h (Get MS-DOS Version Number)
+				;*
+				;* Params:  None
+				;*
+				;* Return:  Short integer of form (M*100)+m, where M is major
+				;*          version number and m is minor version, or integer 
+				;*          is 0 if DOS version earlier than 2.0
+
+ 01D9				GetVer  PROC
+
+ 01D9  B4 30			        mov     ah, 30h                 ; DOS Function 30h
+ 01DB  CD 21			        int     21h                     ; Get MS-DOS version number
+				        .IF     al == 0                 ; If version, version 1
+ 01DD  0A C0		   *	    or	al, al
+ 01DF  75 04		   *	    jne    @C0019
+ 01E1  2B C0			        sub     ax, ax                  ; Set AX to 0
+				        .ELSE                           ; Version 2.0 or higher
+ 01E3  EB 0A		   *	    jmp    @C001B
+ 01E5			   *@C0019:
+ 01E5  2A ED			        sub     ch, ch                  ; Zero CH and move minor
+ 01E7  8A CC			        mov     cl, ah                  ;   version number into CX
+ 01E9  B3 64			        mov     bl, 100
+ 01EB  F6 E3			        mul     bl                      ; Multiply major by 10
+ 01ED  03 C1			        add     ax, cx                  ; Add minor to major*10
+				        .ENDIF
+ 01EF			   *@C001B:
+ 01EF  C3			        ret                             ; Return result in AX
+
+ 01F0				GetVer  ENDP
+
+
+				;* GetKey - Polls for keypress, calling Interrupt 28h while waiting. This
+				;* routine simulates Interrupt 16h, service 0, working directly with the
+				;* keyboard buffer. It should be used only by TSR programs.
+				;*
+				;* Bypassing BIOS to access the keyboard buffer is generally not recommended;
+				;* however, some applications incorrectly set up a handler for Interrupt 16h,
+				;* making them incompatible with TSRs that require keyboard input.
+				;*
+				;* Shows:   BIOS keyboard data area
+				;*
+				;* Params:  None
+				;*
+				;* Return:  AH = scan code
+				;*          AL = character
+
+ 01F0				GetKey  PROC USES ds bx
+
+ 01F0  1E		   *	    push   ds
+ 01F1  53		   *	    push   bx
+ 01F2  B8 0040			        mov     ax, 40h                 ; Point DS to data area (see
+ 01F5  8E D8			        mov     ds, ax                  ;   "Keyboard Data Area" in Help)
+ 01F7  A1 001A			        mov     ax, WORD PTR ds:[1Ah]   ; AX = pointer to head of kb buffer
+
+				        .REPEAT
+ 01FA			   *@C001C:
+ 01FA  CD 28			        int     28h                     ; Call Int 28h to signal idle state
+ 01FC  3B 06 001C		        cmp     ax, WORD PTR ds:[1Ch]   ; If head = tail, no key waiting,
+				        .UNTIL  !zero?                  ;   so continue polling
+ 0200  74 F8		   *	    je     @C001C
+
+ 0202  8B D8			        mov     bx, ax
+ 0204  8B 07			        mov     ax, WORD PTR [bx]       ; Get keypress from buffer head
+ 0206  43			        inc     bx                      ; Advance head position
+ 0207  43			        inc     bx
+				        .IF     bx >= WORD PTR ds:[82h] ; If advanced past end of buffer,
+ 0208  3B 1E 0082	   *	    cmp    bx, word ptr ds : [082h]
+ 020C  72 04		   *	    jb     @C001E
+ 020E  8B 1E 0080		        mov     bx, WORD PTR ds:[80h]   ;   reset to beginning of buffer
+				        .ENDIF
+ 0212			   *@C001E:
+ 0212  89 1E 001A		        mov     WORD PTR ds:[1Ah], bx   ; Set new head pointer
+
+				        ret
+ 0216  5B		   *	    pop    bx
+ 0217  1F		   *	    pop    ds
+ 0218  C3		   *	    ret    00000h
+
+ 0219				GetKey  ENDP
+				        
+				        END

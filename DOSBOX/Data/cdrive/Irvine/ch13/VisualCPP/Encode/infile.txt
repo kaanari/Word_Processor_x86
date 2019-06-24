@@ -1,0 +1,56 @@
+/* ENCODE.C  - This program copies and encodes a file. */
+
+#include <iostream.h>
+#include <fstream.h>
+
+
+/* Translate a buffer of <count> bytes, using an encryption
+   character <eChar>. Uses an XOR operation (ASM function).*/
+
+//extern "C" void TranslateBuffer(char *buf, 
+//    unsigned int count, char eChar);
+
+
+void TranslateBuffer( char * buf, unsigned count, char eChar )
+{
+  __asm 
+ {
+   mov esi,buf    // necessary to push ESI?
+   mov ecx,count
+   mov al,eChar
+
+L1:
+   xor [esi],al
+   inc  esi
+   Loop L1
+ }
+}
+
+
+const int BUFSIZE = 200;
+char buffer[BUFSIZE];
+
+int main() 
+{  
+  unsigned int count;    // character count
+  
+  // character used for encryption 
+  const unsigned char encryptChar = 241;  
+
+  char infilename[] = "infile.txt";
+  char outfilename[] = "outfile.txt";
+
+  ifstream infile( infilename, ios::binary );
+  ofstream outfile( outfilename, ios::binary );
+  
+  while (!infile.eof() )
+  {
+    infile.read(buffer, BUFSIZE );
+    count = infile.gcount();
+    TranslateBuffer(buffer, count, encryptChar);
+
+    //outfile.write(buffer, count);
+  }
+
+  return 0;
+}

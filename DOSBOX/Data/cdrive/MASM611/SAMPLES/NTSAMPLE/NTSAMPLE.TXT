@@ -1,0 +1,87 @@
+              Notes on MASM 6.11 for Windows NT Sample Programs 
+                     (c) Copyright Microsoft Corp. 1993
+
+Notes:     - If you installed the samples during MASM 6.11 setup, you will 
+             have samples for MS-DOS, Microsoft Windows, and Microsoft 
+             Windows NT on your system. However, you need to install MASM 
+             6.11 for the appropriate operating system(s) in order to run 
+             each sample.
+
+           - All of the following examples require MASM 6.11 in order to 
+             assemble. Linking the resulting .obj files to create 
+             executable files requires a 32-bit linker. 
+
+           - The make files in the following samples call a 32-bit linker 
+             named LINK.EXE. The name of the linker included in the Windows 
+             NT software development kit is LINK32.EXE. If your only 32-bit
+             linker is LINK32.EXE, an error will occur because no linker can 
+             be found or because a 16-bit linker is on the path.
+
+           - The example makefiles use names and switches that are specific 
+             to Microsoft Visual C++, 32-bit edition. If you are using 
+             the Windows NT Software Development Kit (SKD) to build the 
+             samples, you must add "TOOLS=SDK" to the NMAKE command line; 
+             for example:
+               
+             nmake TOOLS=SDK /a /f casmdll.mak
+
+=============================================================================
+
+Directory: NTSAMPLE\NTDLL
+
+Contents:  This sample demonstrates how to create a mixed-language (MASM
+           and Microsoft C) dynamic-link library for Windows NT.
+
+Note:      Requires Microsoft Visual C++, 32-bit edition, or the Windows NT 
+           SDK to build the sample.
+
+-----------------------------------------------------------------------------
+Directory: NTSAMPLE\HELLO
+
+Contents:  The sample is a "Hello, world" application developed in assembly 
+           language to use the 32-bit flat memory model of Windows NT.
+
+           The supplied sample code and makefile perform the following 
+           three steps, assembling a 32-bit flat-memory-model application 
+           for the Windows NT environment. 
+
+           1. Places the .386 or .486 directive in the code prior to the 
+              .MODEL flat, stdcall directive to ensure that the code and 
+              data segments are correctly initialized for a 32-bit flat- 
+              memory-model application.
+
+           2. Assembles the source code using the following command:
+
+                ML /c /coff hello.asm
+
+           3. Uses the LINK utility provided with the Windows NT SDK or 
+              Visual C++ for NT to link the object modules. 
+
+Note:     In the MASM code, do not use the INCLUDELIB directive and do not 
+          place the starting label after the END directive. The LINK utility 
+          provided with the Windows NT SDK ignores the default library names 
+          in object files and requires the -entry switch on the linker 
+          command line to specify the starting address.
+
+-----------------------------------------------------------------------------
+Directory: SAMPLES\NTSAMPLE\SZSEARCH
+
+Contents:  This sample demonstrates how to program for Windows NT. The 
+           sample includes a routine that searches for a substring 
+           within a buffer, using a variation of the Boyer-Moore method.
+
+Note:      Requires Microsoft Visual C++, 32-bit edition, or the Windows NT 
+           SDK to build the sample.
+
+-----------------------------------------------------------------------------
+Directory: NTSAMPLE\THREADS
+
+Contents:  In this sample, two threads are created: one from a C procedure, 
+           the other from an assembly-language procedure. The first draws a 
+           green box, the second a red box. Both boxes are moved about the 
+           screen as their individual threads calculate a new position and 
+           redraw the box.
+
+Note:      Requires Microsoft Visual C++, 32-bit edition, or the Windows NT 
+           SDK to build the sample.
+

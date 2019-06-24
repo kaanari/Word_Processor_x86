@@ -1,0 +1,2134 @@
+Microsoft (R) Macro Assembler Version 6.11		    02/09/15 15:55:18
+MISCDEMO.asm						     Page 1 - 1
+
+
+				;* MISCDEMO - Invokes many of the assembly example procedures, most of them
+				;* demonstrating assembly language instructions and calls to the system BIOS.
+				;* MISCDEMO demonstrates how to:
+				;*
+				;*         -   determine hardware information
+				;*         -   display time and date while waiting for keystrokes
+				;*         -   play notes of any frequency on the speaker
+				;*         -   change the line mode for EGA or VGA systems
+				;*         -   create nondestructive pop-up windows
+				;*         -   execute another program as a child process
+				;*         -   create primitive handlers for Interrupts 1Bh, 23h, and 24h
+				;*         -   use procedures callable by C in assembly programs
+				;*         -   use simplified segment directives
+				;*         -   write model-independent procedures
+				;*         -   declare and initialize data with DUP, BYTE, WORD, and DWORD
+				;*         -   create structures with the STRUCT directive
+				;*         -   declare macros
+				;*         -   set up a dispatch table
+				;*
+				;* MISCDEMO.EXE is built from the following files:
+				;*    MISCDEMO.ASM - Main program
+				;*    MISC.ASM     - Assembly procedures for MISCDEMO
+				;*    COMMON.ASM   - Assembly procedures shared by other example programs
+				;*    DEMO.INC     - Include file with macros, structure declarations
+				;*
+				;* Procedures:  GetVidConfig    GetCurPos       VeriPrint       GetPSP
+				;*              WinOpen         VeriAnsi        VeriCop         GetVer
+				;*              WinClose        StrWrite        SetLineMode     NewBlockSize
+				;*              SetCurSize      GetKeyClock     BinToHex        IntToAsc
+				;*              SetCurPos       GetShift        Sound           Colors
+				;*              GetCurSize      GetMem          Pause           Exec
+				;*              WriteTTY        Initialize
+
+				        .DOSSEG
+				        .MODEL  small, pascal, os_dos
+				        INCLUDE demo.inc
+ = 0800			      C BUFFERSIZE      EQU     2048            ; Buffer size in bytes for disk I/O
+			      C 
+ = 0000			      C MDA             EQU     0               ; Adapter constants
+ = 0001			      C CGA             EQU     1
+ = 0002			      C MCGA            EQU     2
+ = 0003			      C EGA             EQU     3
+ = 0004			      C VGA             EQU     4
+ = 0000			      C MONO            EQU     0               ; Display constants
+ = 0001			      C COLOR           EQU     1
+			      C 
+ = 0008			      C BACKSP          EQU     08              ; ASCII code for BACKSPACE key
+ = 0009			      C TAB             EQU     09              ; ASCII code for TAB key
+ = 000A			      C LF              EQU     10              ; ASCII code for line feed
+ = 000D			      C CR              EQU     13              ; ASCII code for ENTER key
+ = 001B			      C ESCAPE          EQU     27              ; ASCII code for ESCAPE key
+ = 004B			      C LEFT            EQU     75              ; Scan code for LEFT arrow
+ = 0A0D			      C CRLF            EQU     0A0Dh           ; Value for carriage return/line feed
+			      C 
+			      C ; Bit masks for shift status
+ = 0080			      C shIns           EQU   80h
+ = 0040			      C shCaps          EQU   40h
+ = 0020			      C shNum           EQU   20h
+ = 0010			      C shScroll        EQU   10h
+ = 0008			      C shAlt           EQU   08h
+ = 0004			      C shCtl           EQU   04h
+ = 0002			      C shLeft          EQU   02h
+ = 0001			      C shRight         EQU   01h
+			      C 
+			      C ;* LoadPtr - Macro to load far address into segment:register pair, or
+			      C ;* near address into register.
+			      C ;*
+			      C ;* Params:  sgmnt - Segment to be loaded with segment address
+			      C ;*          reg - Register to be loaded with offset address
+			      C ;*          pointer - Pointer to address
+			      C ;*
+			      C ;* Shows:   Instructions - lds     les
+			      C ;*          Directives - MACRO     IF        IFIDNI     ELSE
+			      C ;*                       ELSE      IFENDIF   .ERR       ENDM
+			      C ;*          Operators - < >       ;;
+			      C 
+			      C LoadPtr MACRO sgmnt, reg, pointer       ;; Macro definition
+			      C     IF @DataSize                        ; If far pointer, and
+			      C         IFIDNI <sgmnt>, <ds>            ;;   if 1st argument is DS,
+			      C             lds reg, pointer            ;;   load DS:reg with far address
+			      C         ELSEIFIDNI <sgmnt>, <es>        ;;   or if 1st argument is ES,
+			      C             les reg, pointer            ;;   load ES:reg with far address
+			      C         ELSE                            ;; Generate error if not DS or ES
+			      C             .ERR <First argument must be DS or ES>
+			      C         ENDIF
+			      C     ELSE                                ;; If near pointer,
+			      C         IFIDNI <sgmnt>, <es>            ;;   and if segment is ES,
+			      C             push ds                     ;   ensure ES points to
+			      C             pop  es                     ;   same segment as DS
+			      C         ENDIF
+			      C         mov reg, pointer                ;; Then load reg with near address
+			      C     ENDIF
+			      C ENDM
+			      C 
+			      C ;* GetVidOffset - Macro to determine offset in video segment that corresponds
+			      C ;* to given screen coordinates.
+			      C ;*
+			      C ;* Params:  Row - Screen row (top line = 0)
+			      C ;*          Col - Screen column (leftmost column = 0)
+			      C 
+			      C GetVidOffset MACRO Row, Col
+			      C     mov ax, Row
+			      C     mov bl, vconfig.cols
+			      C     mul bl
+			      C     add ax, Col
+			      C     shl ax, 1
+			      C ENDM
+			      C 
+			      C ;* Vector - Macro to read current interrupt vector, store it, and replace it.
+			      C ;*
+			      C ;* Shows:   Equates - @CodeSize     @code
+			      C ;*
+			      C ;* Params:  num - Vector number
+			      C ;*          old - Pointer to doubleword for storing old vector
+			      C ;*          new - Pointer to new handler
+			      C 
+			      C Vector MACRO num, old, new              ;; Macro definition
+			      C     push ds                             ; Save DS and ES registers
+			      C     push es
+			      C     mov  ah, 35h                        ; AH = DOS function number
+			      C     mov  al, num                        ;; AL = interrupt number
+			      C     int  21h                            ; Get Interrupt Vector
+			      C     mov  WORD PTR old[0], bx            ;; Store it
+			      C     mov  WORD PTR old[2], es
+			      C     IF @CodeSize                        ; If medium or large model,
+			      C         lds dx, new                     ;;    load DS from parameter
+			      C     ELSE
+			      C         mov bx, @code                   ;; Else ensure DS points to
+			      C         mov ds, bx                      ;    to code segment
+			      C         mov dx, WORD PTR new            ;; DS:DX equals new vector
+			      C     ENDIF
+			      C     mov ah, 25h                         ; AH = DOS function number
+			      C     int 21h                             ; Set Interrupt Vector
+			      C     pop es                              ; Restore ES and DS
+			      C     pop ds
+			      C ENDM
+			      C 
+			      C PBYTE   TYPEDEF      PTR BYTE   ; Pointer to byte
+			      C PWORD   TYPEDEF      PTR WORD   ; Pointer to word
+			      C PSWORD  TYPEDEF      PTR SWORD  ; Pointer to integer
+			      C PDWORD  TYPEDEF      PTR DWORD  ; Pointer to integer
+			      C NPBYTE  TYPEDEF NEAR PTR BYTE   ; Near pointer to byte
+			      C FPBYTE  TYPEDEF FAR  PTR BYTE   ; Far pointer to byte
+			      C FPVOID  TYPEDEF FAR  PTR        ; Far pointer to void
+			      C PSEG    TYPEDEF WORD            ; Segment value
+			      C 
+			      C ; Structure for video configuration
+ 0008			      C VIDCONFIG       STRUCT
+ 0000  00		      C   mode          BYTE    ?
+ 0001  00		      C   dpage         BYTE    ?
+ 0002  00		      C   rows          BYTE    ?
+ 0003  00		      C   cols          BYTE    ?
+ 0004  00		      C   display       BYTE    ?
+ 0005  00		      C   adapter       BYTE    ?
+ 0006  0000		      C   sgmnt         WORD    ?
+			      C VIDCONFIG       ENDS
+			      C PVIDCONFIG      TYPEDEF PTR VIDCONFIG
+			      C 
+			      C ; Structure for FindFirst and FindNext
+ 002B			      C FILEINFO        STRUCT
+ 0000  0015 [		      C   pad           BYTE    21 DUP (?)      ; pad to 43 bytes
+        00
+       ]
+ 0015  00		      C   attrib        BYTE    ?               ; file attribute
+ 0016  0000		      C   time          WORD    ?               ; file time
+ 0018  0000		      C   date          WORD    ?               ; file date
+ 001A  00000000		      C   count         DWORD   ?               ; file size
+ 001E  000D [		      C   filename      BYTE    13 DUP (?)      ; filename
+        00
+       ]
+			      C FILEINFO        ENDS
+			      C PFILEINFO       TYPEDEF PTR FILEINFO
+			      C 
+			      C ; Structure for disk statistics
+ 0008			      C DISKSTAT        STRUCT
+ 0000  0000		      C   total         WORD    ?               ; Total clusters
+ 0002  0000		      C   avail         WORD    ?               ; Available clusters
+ 0004  0000		      C   sects         WORD    ?               ; Sectors per cluster
+ 0006  0000		      C   bytes         WORD    ?               ; Bytes per sector
+			      C DISKSTAT        ENDS
+			      C PDISKSTAT       TYPEDEF PTR DISKSTAT
+			      C 
+			      C ; Structure for parameter block
+ 000E			      C PARMBLK         STRUCT
+ 0000  0000		      C   env           PSEG    ?               ; Segment of environment block
+ 0002  00000000		      C   taddr         FPBYTE  ?               ; Segment:offset address of tail
+ 0006  00000000		      C   fcb1          FPBYTE  ?               ; Segment:offset address of 1st FCB
+ 000A  00000000		      C   fcb2          FPBYTE  ?               ; Segment:offset address of 2nd FCB
+			      C PARMBLK         ENDS
+			      C PPARMBLK        TYPEDEF PTR PARMBLK
+			      C 
+			      C ; Prototypes from COMMON.ASM
+			      C GetVer          PROTO PASCAL
+			      C GetVidConfig    PROTO PASCAL 
+			      C StrWrite        PROTO PASCAL Row:WORD, Col:WORD, Sptr:PBYTE
+			      C ClearBox        PROTO PASCAL Attr:WORD, Row1:WORD, Col1:WORD,
+			      C                                         Row2:WORD, Col2:WORD
+			      C DisableCga      PROTO PASCAL 
+			      C EnableCga       PROTO PASCAL 
+			      C SetCurPos       PROTO PASCAL Row:WORD, Col:WORD
+			      C GetCurPos       PROTO PASCAL 
+			      C StrInput        PROTO PASCAL Row:WORD, Col:WORD, Max:WORD, Sptr:PBYTE
+			      C 
+			      C ; Prototypes from MISC.ASM
+			      C WinOpen         PROTO PASCAL Row1:WORD, Col1:WORD,
+			      C                              Row2:WORD, Col2:WORD, Attr:WORD
+			      C WinClose        PROTO PASCAL Adr:WORD
+			      C SetCurSize      PROTO PASCAL Scan1:WORD, Scan2:WORD
+			      C GetCurSize      PROTO PASCAL 
+			      C GetShift        PROTO PASCAL 
+			      C GetMem          PROTO PASCAL
+			      C GetKeyClock     PROTO PASCAL Row:WORD, Col:WORD
+			      C VeriAnsi        PROTO PASCAL 
+			      C VeriPrint       PROTO PASCAL 
+			      C VeriCop         PROTO PASCAL
+			      C SetLineMode     PROTO PASCAL Line:WORD
+			      C Pause           PROTO PASCAL Duration:WORD
+			      C Sound           PROTO PASCAL Freq:WORD, Duration:WORD
+			      C WriteTTY        PROTO PASCAL Sptr:PBYTE, icolor:WORD
+			      C Colors          PROTO PASCAL Logic:WORD, Attr:WORD,
+			      C                              Row1:WORD, Col1:WORD, Row2:WORD, Col2:WORD
+			      C Exec            PROTO PASCAL Spec:PBYTE, Block:PPARMBLK,
+			      C                              CtrBrk:PTR FAR,
+			      C                              CtrlC:PTR FAR,
+			      C                              Criterr:PTR FAR
+			      C BinToHex        PROTO PASCAL Num:WORD, Sptr:PBYTE
+			      C NewBlockSize    PROTO PASCAL Adr:WORD, Resize:WORD
+			      C Initialize      PROTO PASCAL
+			      C                 EXTERNDEF    IntToAsc:PROC
+			      C 
+			      C 
+			      C ; Prototypes from MATH.ASM
+			      C AddLong         PROTO PASCAL Long1:SDWORD, Long2:SDWORD
+			      C SubLong         PROTO PASCAL Long1:SDWORD, Long2:SDWORD
+			      C ImulLong        PROTO PASCAL Long1:SDWORD, Long2:SDWORD
+			      C MulLong         PROTO PASCAL Long1:DWORD, Long2:DWORD
+			      C IdivLong        PROTO PASCAL Long1:SDWORD, Short2:SWORD, Remn:PSWORD
+			      C DivLong         PROTO PASCAL Long1:DWORD, Short2:WORD, Remn:PWORD
+			      C Quadratic       PROTO PASCAL aa:DWORD, bb:DWORD, cc:DWORD,
+			      C                              r1:PDWORD, r2:PDWORD
+			      C 
+			      C ; Prototypes from FILE.ASM
+			      C ChangeDrive     PROTO PASCAL Drive:WORD
+			      C GetDiskSize     PROTO PASCAL Drive:WORD, Disk:PDISKSTAT
+			      C SetDta          PROTO PASCAL Dta:FPBYTE
+			      C GetDta          PROTO PASCAL Dta:FPBYTE
+			      C ReadCharAttr    PROTO PASCAL Attr:PWORD
+			      C GetCurDir       PROTO PASCAL Spec:PBYTE
+			      C GetCurDrive     PROTO PASCAL
+			      C CopyFile        PROTO PASCAL Imode:WORD, Fspec1:PBYTE, Fspec2:PBYTE
+			      C DelFile         PROTO PASCAL Fspec:PBYTE
+			      C MakeDir         PROTO PASCAL Pspec:PBYTE
+			      C RemoveDir       PROTO PASCAL Pspec:PBYTE
+			      C ChangeDir       PROTO PASCAL Pspec:PBYTE
+			      C GetAttribute    PROTO PASCAL Fspec:PBYTE
+			      C SetAttribute    PROTO PASCAL Attr:WORD, Fspec:PBYTE
+			      C RenameFile      PROTO PASCAL Fspec1:PBYTE, Fspec2:PBYTE
+			      C GetFileTime     PROTO PASCAL Handle:WORD, Sptr:PBYTE
+			      C FindFirst       PROTO PASCAL Attr:WORD, Fspec:PBYTE, Finfo:PFILEINFO
+			      C FindNext        PROTO PASCAL Finfo:PFILEINFO
+			      C UniqueFile      PROTO PASCAL Attr:WORD, Pspec:PBYTE
+			      C OpenFile        PROTO PASCAL Access:WORD, Fspec:PBYTE
+			      C CloseFile       PROTO PASCAL Handle:WORD
+			      C CreateFile      PROTO PASCAL Attr:WORD, Fspec:PBYTE
+			      C CreateNewFile   PROTO PASCAL Attr:WORD, Fspec:PBYTE
+			      C ReadFile        PROTO PASCAL Handle:WORD, Len:WORD, Pbuff:PBYTE
+			      C WriteFile       PROTO PASCAL Handle:WORD, Sptr:PBYTE
+			      C Rewind          PROTO PASCAL Handle:WORD
+			      C GetFileSize     PROTO PASCAL Handle:WORD
+			      C GetStr          PROTO PASCAL Strbuf:PBYTE, Maxlen:WORD
+			      C StrCompare      PROTO PASCAL Sptr1:PBYTE, Sptr2:PBYTE, Len:WORD
+			      C StrFindChar     PROTO PASCAL Ichar:SBYTE, Sptr:PBYTE, Direct:WORD
+			      C 
+			      C 
+			      C ;* Global variables defined with EXTERNDEF are public in the module
+			      C ;* in which they are defined, and external in other modules in which
+			      C ;* they are used.
+			      C ;*
+			      C ;* Shows:   Directive             - EXTERNDEF
+			      C ;*          Predefined text macro - @CurSeg
+			      C 
+ 0000			      C         .DATA
+			      C         EXTERNDEF   vconfig:VIDCONFIG   ; Video configuration
+			      C         EXTERNDEF   _psp:PSEG           ; Segment of Program Segment Prefix
+			      C         EXTERNDEF   _env:PSEG           ; Segment of environment block
+ 0000			      C @CurSeg ENDS                            ; End .DATA so any subsequent
+			      C                                         ;   include is outside segment
+			      C 
+
+				NewBreak        PROTO   FAR
+				NewCtrlC        PROTO   FAR
+				NewCritErr      PROTO   FAR
+				DispMenu        PROTO   NEAR
+				Press           PROTO   NEAR
+				GetVidinfo      PROTO   NEAR
+				GetMemInfo      PROTO   NEAR
+				CheckPrinter    PROTO   NEAR
+				CheckAnsi       PROTO   NEAR
+				CheckCoproc     PROTO   NEAR
+				GetConfig       PROTO   NEAR
+				Speaker         PROTO   NEAR
+				SetLines        PROTO   NEAR
+				PopWindows      PROTO   NEAR
+				SetAttrs        PROTO   NEAR
+				ExecPgm         PROTO   NEAR
+
+				        .STACK
+ 0000				        .DATA
+
+ = 0500				PGMSIZE EQU     500h                    ; Maximum program size in paragraphs
+ = 003B				F1      EQU     59                      ; Extended code for first option key
+ = 0041				F7      EQU     65                      ; Extended code for last option key
+ = 0000				CLKROW  EQU     0                       ; Row for on-screen clock
+ = 003E				CLKCOL  EQU     62                      ; Column for on-screen clock
+
+				;* Box - Macro to color portion of screen for effect. Not to be confused with
+				;* the WinOpen procedure, which is far more capable.
+				;*
+				;* Params:  Row1 - Screen row at top of box
+				;*          Col1 - Screen column at left side of box
+				;*          Row2 - Screen row at bottom of box
+				;*          Col2 - Screen column at right side of box
+
+				Box MACRO Row1, Col1, Row2, Col2
+				    LOCAL sk
+				    mov ax, 0600h                       ; Scroll service
+				    mov bh, Filmono                     ;; Fill attribute
+				    .IF vconfig.adapter != MDA          ;; If color,
+				    mov bh, Filcolr                     ;;   use color fill attribute
+				    .ENDIF
+				    mov ch, Row1
+				    mov cl, Col1                        ;; CX = row/col for upper left
+				    mov dh, Row2
+				    mov dl, Col2                        ;; DX = row/col for lower right
+				    int 10h                             ; Blank window area on screen
+				ENDM
+
+ 0000 00			OldMode BYTE    ?                       ; Original video mode
+ 0001 0000			OldCurs WORD    ?                       ; Original cursor coordinates
+ 0003 0000			KeepSeg PSEG    ?                       ; Segment addr, orig screen
+ 0005 1F 20 3B 4E		Filcolr BYTE    1Fh, 20h, 3Bh, 4Eh      ; Color fill attributes
+ 0009 70 89 78 01		Filmono BYTE    70h, 89h, 78h, 1        ; Monochrome fill attributes
+ 000D 07			Fill    BYTE    7                       ; Default attribute for menu
+ 000E 00			Filsub  BYTE    ?                       ; Fore/background colors in submenu
+
+ 000F 2E 20 2E 20 2E 20		PresMsg BYTE    ". . . press a key to continue", 0
+       70 72 65 73 73 20
+       61 20 6B 65 79 20
+       74 6F 20 63 6F 6E
+       74 69 6E 75 65 00
+ 002D 79 65 73			yes     BYTE    "yes"
+ 0030 6E 6F 20			no      BYTE    "no "
+
+				; Main menu text
+
+ 0033 2A 2A 2A 20 20 4D		Menu1   BYTE    "***  MISC Demonstration Program  ***", 0
+       49 53 43 20 44 65
+       6D 6F 6E 73 74 72
+       61 74 69 6F 6E 20
+       50 72 6F 67 72 61
+       6D 20 20 2A 2A 2A
+       00
+ 0058 46 31 20 20 53 79		Menu2   BYTE    "F1  System Configuration", 0
+       73 74 65 6D 20 43
+       6F 6E 66 69 67 75
+       72 61 74 69 6F 6E
+       00
+ 0071 46 32 20 20 53 70		Menu3   BYTE    "F2  Speaker Test", 0
+       65 61 6B 65 72 20
+       54 65 73 74 00
+ 0082 46 33 20 20 54 6F		Menu4   BYTE    "F3  Toggle Line Mode", 0
+       67 67 6C 65 20 4C
+       69 6E 65 20 4D 6F
+       64 65 00
+ 0097 46 34 20 20 57 69		Menu5   BYTE    "F4  Windows", 0
+       6E 64 6F 77 73 00
+ 00A3 46 35 20 20 53 63		Menu6   BYTE    "F5  Screen Colors", 0
+       72 65 65 6E 20 43
+       6F 6C 6F 72 73 00
+ 00B5 46 36 20 20 45 78		Menu7   BYTE    "F6  Exec Program", 0
+       65 63 20 50 72 6F
+       67 72 61 6D 00
+ 00C6 53 65 6C 65 63 74		Menu8   BYTE    "Select an option, or press ESC to quit:", 0
+       20 61 6E 20 6F 70
+       74 69 6F 6E 2C 20
+       6F 72 20 70 72 65
+       73 73 20 45 53 43
+       20 74 6F 20 71 75
+       69 74 3A 00
+
+				; Option F1 - System Configuration
+
+ 00EE 6D 6F 6E 6F 63 68		MonoStr BYTE    "monochrome"
+       72 6F 6D 65
+ 00F8 63 6F 6C 6F 72 20		ClrStr  BYTE    "color     "
+       20 20 20 20
+ 0102 4D 44 41 20 43 47		AdapStr BYTE    "MDA CGA MCGAEGA VGA "
+       41 20 4D 43 47 41
+       45 47 41 20 56 47
+       41 20
+ 0116 41 64 61 70 74 65		VidMsg1 BYTE    "Adapter:                 xxxx", 0
+       72 3A 20 20 20 20
+       20 20 20 20 20 20
+       20 20 20 20 20 20
+       20 78 78 78 78 00
+ 0134 44 69 73 70 6C 61		VidMsg2 BYTE    "Display:                 xxxxxxxxxx", 0
+       79 3A 20 20 20 20
+       20 20 20 20 20 20
+       20 20 20 20 20 20
+       20 78 78 78 78 78
+       78 78 78 78 78 00
+ 0158 4D 6F 64 65 3A 20		VidMsg3 BYTE    "Mode:                    xx", 0
+       20 20 20 20 20 20
+       20 20 20 20 20 20
+       20 20 20 20 20 20
+       20 78 78 00
+ 0174 52 6F 77 73 3A 20		VidMsg4 BYTE    "Rows:                    xx", 0
+       20 20 20 20 20 20
+       20 20 20 20 20 20
+       20 20 20 20 20 20
+       20 78 78 00
+ 0190 54 6F 74 61 6C 20		MemMsg1 BYTE    "Total memory:            xxxx Kb", 0
+       6D 65 6D 6F 72 79
+       3A 20 20 20 20 20
+       20 20 20 20 20 20
+       20 78 78 78 78 20
+       4B 62 00
+ 01B1 41 76 61 69 6C 61		MemMsg2 BYTE    "Available memory:        xxxx Kb", 0
+       62 6C 65 20 6D 65
+       6D 6F 72 79 3A 20
+       20 20 20 20 20 20
+       20 78 78 78 78 20
+       4B 62 00
+ 01D2 50 72 69 6E 74 65		PrnMsg  BYTE    "Printer ready:           xxx", 0
+       72 20 72 65 61 64
+       79 3A 20 20 20 20
+       20 20 20 20 20 20
+       20 78 78 78 00
+ 01EF 41 4E 53 49 20 64		AnsiMsg BYTE    "ANSI driver installed:   xxx", 0
+       72 69 76 65 72 20
+       69 6E 73 74 61 6C
+       6C 65 64 3A 20 20
+       20 78 78 78 00
+ 020C 43 6F 70 72 6F 63		CopMsg  BYTE    "Coprocessor installed:   xxx", 0
+       65 73 73 6F 72 20
+       69 6E 73 74 61 6C
+       6C 65 64 3A 20 20
+       20 78 78 78 00
+ = 0019				LEN1    EQU     LENGTHOF CopMsg - 4
+
+				; Option F3 - Toggle Line Mode
+
+ 0229 4C 69 6E 65 20 6D		LineMsg BYTE    "Line mode reset available only for EGA or VGA", 0
+       6F 64 65 20 72 65
+       73 65 74 20 61 76
+       61 69 6C 61 62 6C
+       65 20 6F 6E 6C 79
+       20 66 6F 72 20 45
+       47 41 20 6F 72 20
+       56 47 41 00
+
+				; Option F4 - Windows
+
+ 0257 57 49 4E 44 4F 57		WinMsg  BYTE    "WINDOW x", 0
+       20 78 00
+ = 0007				LEN3    EQU     LENGTHOF WinMsg - 2
+
+				; Option F5  Screen Colors
+
+ 0260 54 6F 67 67 6C 65		CMsg1   BYTE    "Toggle                   Step", 0
+       20 20 20 20 20 20
+       20 20 20 20 20 20
+       20 20 20 20 20 20
+       20 53 74 65 70 00
+ 027E C4 C4 C4 C4 C4 C4		CMsg2   BYTE    "컴컴컴컴컴컴컴컴         컴컴컴컴컴컴컴컴컴", 0
+       C4 C4 C4 C4 C4 C4
+       C4 C4 C4 C4 20 20
+       20 20 20 20 20 20
+       20 C4 C4 C4 C4 C4
+       C4 C4 C4 C4 C4 C4
+       C4 C4 C4 C4 C4 C4
+       C4 00
+ 02AA 42 20 20 62 6C 69		CMsg3   BYTE    "B  blink                 ", 27, 26, "  foreground", 0
+       6E 6B 20 20 20 20
+       20 20 20 20 20 20
+       20 20 20 20 20 20
+       20 1B 1A 20 20 66
+       6F 72 65 67 72 6F
+       75 6E 64 00
+ 02D2 49 20 20 69 6E 74		CMsg4   BYTE    "I  intensity             ", 24, 25, "  background", 0
+       65 6E 73 69 74 79
+       20 20 20 20 20 20
+       20 20 20 20 20 20
+       20 18 19 20 20 62
+       61 63 6B 67 72 6F
+       75 6E 64 00
+ 02FA 46 6F 72 65 67 72		CMsg5   BYTE    "Foreground:  press F, then color number 0-7", 0
+       6F 75 6E 64 3A 20
+       20 70 72 65 73 73
+       20 46 2C 20 74 68
+       65 6E 20 63 6F 6C
+       6F 72 20 6E 75 6D
+       62 65 72 20 30 2D
+       37 00
+ 0326 42 61 63 6B 67 72		CMsg6   BYTE    "Background:  press A, then color number 0-7", 0
+       6F 75 6E 64 3A 20
+       20 70 72 65 73 73
+       20 41 2C 20 74 68
+       65 6E 20 63 6F 6C
+       6F 72 20 6E 75 6D
+       62 65 72 20 30 2D
+       37 00
+ 0352 43 6F 6C 6F 72 20		CMsg7   BYTE    "Color Numbers", 0
+       4E 75 6D 62 65 72
+       73 00
+ 0360 C4 C4 C4 C4 C4 C4		CMsg8   BYTE    "컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴�", 0
+       C4 C4 C4 C4 C4 C4
+       C4 C4 C4 C4 C4 C4
+       C4 C4 C4 C4 C4 C4
+       C4 C4 C4 C4 C4 C4
+       C4 C4 C4 C4 C4 C4
+       C4 C4 C4 C4 C4 C4
+       C4 00
+ 038C 30 20 20 62 6C 61		CMsg9   BYTE    "0  black                     4  red", 0
+       63 6B 20 20 20 20
+       20 20 20 20 20 20
+       20 20 20 20 20 20
+       20 20 20 20 20 34
+       20 20 72 65 64 00
+ 03B0 31 20 20 62 6C 75		CMsg10  BYTE    "1  blue                      5  magenta", 0
+       65 20 20 20 20 20
+       20 20 20 20 20 20
+       20 20 20 20 20 20
+       20 20 20 20 20 35
+       20 20 6D 61 67 65
+       6E 74 61 00
+ 03D8 32 20 20 67 72 65		CMsg11  BYTE    "2  green                     6  brown", 0
+       65 6E 20 20 20 20
+       20 20 20 20 20 20
+       20 20 20 20 20 20
+       20 20 20 20 20 36
+       20 20 62 72 6F 77
+       6E 00
+ 03FE 33 20 20 63 79 61		CMsg12  BYTE    "3  cyan                      7  white", 0
+       6E 20 20 20 20 20
+       20 20 20 20 20 20
+       20 20 20 20 20 20
+       20 20 20 20 20 37
+       20 20 77 68 69 74
+       65 00
+ 0424 54 6F 67 67 6C 65		CMsg13  BYTE    "Toggle", 0
+       00
+ 042B C4 C4 C4 C4 C4 C4		CMsg14  BYTE    "컴컴컴컴컴컴컴�", 0
+       C4 C4 C4 C4 C4 C4
+       C4 C4 C4 00
+ 043B 42 20 20 62 6C 69		CMsg15  BYTE    "B  blink", 0
+       6E 6B 00
+ 0444 49 20 20 69 6E 74		CMsg16  BYTE    "I  intensity", 0
+       65 6E 73 69 74 79
+       00
+ 0451 55 20 20 75 6E 64		CMsg17  BYTE    "U  underline", 0
+       65 72 6C 69 6E 65
+       00
+ 045E 52 20 20 72 65 76		CMsg18  BYTE    "R  reverse", 0
+       65 72 73 65 00
+
+				; Option F6 - Exec Program
+
+ 0469 52 65 74 75 72 6E		RetMsg  BYTE    "Return code:  "
+       20 63 6F 64 65 3A
+       20 20
+ 0477  0006 [			Recode  BYTE    6 DUP (?)               ; ASCII string for return code
+        00
+       ]
+ 047D 45 6E 74 65 72 20		ExecMsg BYTE    "Enter program file spec (including .COM or .EXE):", 0
+       70 72 6F 67 72 61
+       6D 20 66 69 6C 65
+       20 73 70 65 63 20
+       28 69 6E 63 6C 75
+       64 69 6E 67 20 2E
+       43 4F 4D 20 6F 72
+       20 2E 45 58 45 29
+       3A 00
+ 04AF 45 6E 74 65 72 20		TailMsg BYTE    "Enter command-line argument(s):", 0
+       63 6F 6D 6D 61 6E
+       64 2D 6C 69 6E 65
+       20 61 72 67 75 6D
+       65 6E 74 28 73 29
+       3A 00
+ 04CF 32			Fspec   BYTE    50, 50 DUP (?)          ; File specification (max length = 50)
+       0032 [
+        00
+       ]
+ 0502 32			Tail    BYTE    50, 50 DUP (?)          ; Command-line tail (max length = 50)
+       0032 [
+        00
+       ]
+ 0535 00			Fcblk1  BYTE    0                       ; Allocate space for 1st FCB
+ 0536  000B [			        BYTE    11 DUP (0)
+        00
+       ]
+ 0541  0019 [			        BYTE    25 DUP (0)
+        00
+       ]
+ 055A 00			Fcblk2  BYTE    0                       ; Allocate space for 2nd FCB
+ 055B  000B [			        BYTE    11 DUP (0)
+        00
+       ]
+ 0566  0019 [			        BYTE    25 DUP (0)
+        00
+       ]
+ 057F 0000 00000000		pb      PARMBLK <>                      ; Parameter block structure
+       00000000 00000000
+
+				; Initialize dispatch table with offsets for internal procedures.
+
+				TPROC   TYPEDEF PROTO           ; Procedure type
+				PPROC   TYPEDEF PTR TPROC       ; Pointer to procedure with no arguments
+
+				; Table of procedures
+ 058D 0242 R 0301 R 0316 R	DispTbl PPROC   GetConfig, Speaker, SetLines,
+       0370 R 043E R 06D1 R
+				                PopWindows, SetAttrs, ExecPgm
+
+ 0000				        .CODE
+				        .STARTUP
+ 0000			   *@Startup:
+ 0000  BA ---- R	   *	    mov    dx, DGROUP
+ 0003  8E DA		   *	    mov    ds, dx
+ 0005  8C D3		   *	    mov    bx, ss
+ 0007  2B DA		   *	    sub    bx, dx
+ 0009  D1 E3		   *	    shl    bx, 001h
+ 000B  D1 E3		   *	    shl    bx, 001h
+ 000D  D1 E3		   *	    shl    bx, 001h
+ 000F  D1 E3		   *	    shl    bx, 001h
+ 0011  FA		   *	    cli    
+ 0012  8E D2		   *	    mov    ss, dx
+ 0014  03 E3		   *	    add    sp, bx
+ 0016  FB		   *	    sti    
+
+				        ; Initialize _psp and _env variables
+				        INVOKE  Initialize
+ 0017  E8 0000 E	   *	    call   Initialize
+
+				        ; Return unused memory to DOS
+				        ; Pass PSP segment address and memory block allocated to program
+				        INVOKE  NewBlockSize, _psp, PGMSIZE
+ 001A  FF 36 0000 E	   *	    push   _psp
+ 001E  B8 0500		   *	    mov    ax, +00500h
+ 0021  50		   *	    push   ax
+ 0022  E8 0000 E	   *	    call   NewBlockSize
+
+				        ; Initialize global configuration data
+				        INVOKE  GetVidConfig
+ 0025  E8 0000 E	   *	    call   GetVidConfig
+
+ 0028  A0 0002 E		        mov     al, vconfig.rows
+ 002B  A2 0000 R		        mov     OldMode, al             ; Preserve original line mode
+
+				        ; Get current cursor position
+				        INVOKE  GetCurPos
+ 002E  E8 0000 E	   *	    call   GetCurPos
+
+ 0031  A3 0001 R		        mov     OldCurs, ax             ; Store it
+
+				        ; Preserve original screen and put up window
+				        ; Pass top, left, bottom, right, and attribute
+				        INVOKE  WinOpen, 0, 0, vconfig.rows, 79, 07h
+ 0034  33 C0		   *	    xor    ax, ax
+ 0036  50		   *	    push   ax
+ 0037  50		   *	    push   ax
+ 0038  A0 0002 E	   *	    mov    al, byte  ptr vconfig+002h
+ 003B  32 E4		   *	    xor    ah, ah
+ 003D  50		   *	    push   ax
+ 003E  B8 004F		   *	    mov    ax, +0004Fh
+ 0041  50		   *	    push   ax
+ 0042  B8 0007		   *	    mov    ax, +00007h
+ 0045  50		   *	    push   ax
+ 0046  E8 0000 E	   *	    call   WinOpen
+
+ 0049  A3 0003 R		        mov     KeepSeg, ax             ; Keep segment address
+				        .IF     AX == 0                 ; If window not opened successfully,
+ 004C  0B C0		   *	    or	ax, ax
+ 004E  75 05		   *	    jne    @C0001
+				        .EXIT   1                       ;   exit with return code = 1
+ 0050  B8 4C01		   *	    mov    ax, 04C01h
+ 0053  CD 21		   *	    int    021h
+				        .ENDIF
+ 0055			   *@C0001:
+
+				        .WHILE 1
+ 0055			   *@C0003:
+
+				        ; Display main menu
+				        INVOKE  DispMenu
+ 0055  E8 006E		   *	    call   DispMenu
+
+				        ; Highlight on-screen clock with macro
+				        Box CLKROW, CLKCOL-1, CLKROW, CLKCOL + 17
+ 0058  B8 0600		     1	    mov ax, 0600h                       
+ 005B  8A 3E 0009 R	     1	    mov bh, Filmono                     
+ 005F  80 3E 0005 E 00	   *	    cmp    vconfig . adapter, MDA
+ 0064  74 04		   *	    je     @C0004
+ 0066  8A 3E 0005 R	     1	    mov bh, Filcolr                     
+ 006A			   *@C0004:
+ 006A  B5 00		     1	    mov ch, CLKROW
+ 006C  B1 3D		     1	    mov cl, CLKCOL-1                        
+ 006E  B6 00		     1	    mov dh, CLKROW
+ 0070  B2 4F		     1	    mov dl, CLKCOL + 17                        
+ 0072  CD 10		     1	    int 10h                             
+
+				        ; Poll for keyboard selection while updating time
+				        ; Pass row and column
+				        INVOKE  GetKeyClock, CLKROW, CLKCOL
+ 0074  33 C0		   *	    xor    ax, ax
+ 0076  50		   *	    push   ax
+ 0077  B8 003E		   *	    mov    ax, +0003Eh
+ 007A  50		   *	    push   ax
+ 007B  E8 0000 E	   *	    call   GetKeyClock
+
+				        .BREAK .IF al == ESCAPE         ; Quit loop if ESC key
+ 007E  3C 1B		   *	    cmp    al, ESCAPE
+ 0080  74 18		   *	    je     @C0006
+
+				        .CONTINUE .IF (ah < F1) || (ah > F7) ; Ignore if not a function
+ 0082  80 FC 3B		   *	    cmp    ah, F1
+ 0085  72 CE		   *	    jb     @C0003
+ 0087  80 FC 41		   *	    cmp    ah, F7
+ 008A  77 C9		   *	    ja     @C0003
+				                                             ;   key between F1 and F7?
+
+ 008C  86 C4			        xchg    al, ah                  ; Yes?  Make AX = AH
+ 008E  2C 3B			        sub     al, F1                  ; Normalize to 0
+ 0090  D0 E0			        shl     al, 1                   ; Double to make word index
+ 0092  8B D8			        mov     bx, ax                  ; BX = index to table
+
+				        ; Call the current procedure from call table
+				        INVOKE  DispTbl[bx]
+ 0094  FF 97 058D R	   *	    call   DispTbl[bx]
+
+				        .ENDW                           ; Loop for another key
+ 0098  EB BB		   *	    jmp    @C0003
+ 009A			   *@C0006:
+
+ 009A  A0 0000 R		        mov     al, OldMode             ; Get original line mode
+				        .IF     al != vconfig.rows      ; If not same as current mode,
+ 009D  3A 06 0002 E	   *	    cmp    al, vconfig . rows
+ 00A1  74 05		   *	    je     @C000B
+
+ 00A3  40			        inc     ax                      ;   increment to 25/43/50
+
+				        ; Restore line mode, pass lines
+				        INVOKE  SetLineMode, ax
+ 00A4  50		   *	    push   ax
+ 00A5  E8 0000 E	   *	    call   SetLineMode
+
+				        .ENDIF
+ 00A8			   *@C000B:
+
+				        ; Restore original screen, pass segment of screen contents
+				        INVOKE  WinClose, KeepSeg
+ 00A8  FF 36 0003 R	   *	    push   KeepSeg
+ 00AC  E8 0000 E	   *	    call   WinClose
+
+ 00AF  A1 0001 R		        mov     ax, OldCurs
+
+				        ; Restore cursor to original place
+				        ; Pass row and column
+				        INVOKE  SetCurPos, BYTE PTR OldCurs[1], BYTE PTR OldCurs[0]
+ 00B2  A0 0002 R	   *	    mov    al, byte  ptr OldCurs+001h
+ 00B5  32 E4		   *	    xor    ah, ah
+ 00B7  50		   *	    push   ax
+ 00B8  A0 0001 R	   *	    mov    al, byte  ptr OldCurs
+ 00BB  32 E4		   *	    xor    ah, ah
+ 00BD  50		   *	    push   ax
+ 00BE  E8 0000 E	   *	    call   SetCurPos
+
+				        .EXIT   0                       ; Exit wih return code 0
+ 00C1  B8 4C00		   *	    mov    ax, 04C00h
+ 00C4  CD 21		   *	    int    021h
+
+
+				;* DispMenu - Displays main menu.
+				;*
+				;* Uses:    vconfig - Video configuration structure (initialized
+				;*          by calling the GetVidConfig procedure)
+				;*
+				;* Return:  None
+
+ 00C6				DispMenu PROC NEAR
+
+ 00C6  B8 0600			        mov     ax, 0600h               ; Scroll screen service
+ 00C9  8A 3E 000D R		        mov     bh, Fill                ; Menu display attribute
+ 00CD  2B C9			        sub     cx, cx                  ; From row 0, col 0
+ 00CF  8A 36 0002 E		        mov     dh, vconfig.rows        ;   to bottom row,
+ 00D3  B2 4F			        mov     dl, 79                  ;   rightmost column
+ 00D5  CD 10			        int     10h                     ; Clear entire screen
+
+				        ; Display menu
+				        ; For each line pass row, column, and string address
+				        INVOKE StrWrite,  4, 21, ADDR Menu1
+ 00D7  B8 0004		   *	    mov    ax, +00004h
+ 00DA  50		   *	    push   ax
+ 00DB  B8 0015		   *	    mov    ax, +00015h
+ 00DE  50		   *	    push   ax
+ 00DF  8D 06 0033 R	   *	    lea    ax, Menu1
+ 00E3  50		   *	    push   ax
+ 00E4  E8 0000 E	   *	    call   StrWrite
+				        INVOKE StrWrite,  8, 28, ADDR Menu2
+ 00E7  B8 0008		   *	    mov    ax, +00008h
+ 00EA  50		   *	    push   ax
+ 00EB  B8 001C		   *	    mov    ax, +0001Ch
+ 00EE  50		   *	    push   ax
+ 00EF  8D 06 0058 R	   *	    lea    ax, Menu2
+ 00F3  50		   *	    push   ax
+ 00F4  E8 0000 E	   *	    call   StrWrite
+				        INVOKE StrWrite,  9, 28, ADDR Menu3
+ 00F7  B8 0009		   *	    mov    ax, +00009h
+ 00FA  50		   *	    push   ax
+ 00FB  B8 001C		   *	    mov    ax, +0001Ch
+ 00FE  50		   *	    push   ax
+ 00FF  8D 06 0071 R	   *	    lea    ax, Menu3
+ 0103  50		   *	    push   ax
+ 0104  E8 0000 E	   *	    call   StrWrite
+				        INVOKE StrWrite, 10, 28, ADDR Menu4
+ 0107  B8 000A		   *	    mov    ax, +0000Ah
+ 010A  50		   *	    push   ax
+ 010B  B8 001C		   *	    mov    ax, +0001Ch
+ 010E  50		   *	    push   ax
+ 010F  8D 06 0082 R	   *	    lea    ax, Menu4
+ 0113  50		   *	    push   ax
+ 0114  E8 0000 E	   *	    call   StrWrite
+				        INVOKE StrWrite, 11, 28, ADDR Menu5
+ 0117  B8 000B		   *	    mov    ax, +0000Bh
+ 011A  50		   *	    push   ax
+ 011B  B8 001C		   *	    mov    ax, +0001Ch
+ 011E  50		   *	    push   ax
+ 011F  8D 06 0097 R	   *	    lea    ax, Menu5
+ 0123  50		   *	    push   ax
+ 0124  E8 0000 E	   *	    call   StrWrite
+				        INVOKE StrWrite, 12, 28, ADDR Menu6
+ 0127  B8 000C		   *	    mov    ax, +0000Ch
+ 012A  50		   *	    push   ax
+ 012B  B8 001C		   *	    mov    ax, +0001Ch
+ 012E  50		   *	    push   ax
+ 012F  8D 06 00A3 R	   *	    lea    ax, Menu6
+ 0133  50		   *	    push   ax
+ 0134  E8 0000 E	   *	    call   StrWrite
+				        INVOKE StrWrite, 13, 28, ADDR Menu7
+ 0137  B8 000D		   *	    mov    ax, +0000Dh
+ 013A  50		   *	    push   ax
+ 013B  B8 001C		   *	    mov    ax, +0001Ch
+ 013E  50		   *	    push   ax
+ 013F  8D 06 00B5 R	   *	    lea    ax, Menu7
+ 0143  50		   *	    push   ax
+ 0144  E8 0000 E	   *	    call   StrWrite
+				        INVOKE StrWrite, 17, 18, ADDR Menu8
+ 0147  B8 0011		   *	    mov    ax, +00011h
+ 014A  50		   *	    push   ax
+ 014B  B8 0012		   *	    mov    ax, +00012h
+ 014E  50		   *	    push   ax
+ 014F  8D 06 00C6 R	   *	    lea    ax, Menu8
+ 0153  50		   *	    push   ax
+ 0154  E8 0000 E	   *	    call   StrWrite
+
+				        ; Park cursor at prompt, pass row and column
+				        INVOKE  SetCurPos, 17, 18 + (LENGTHOF Menu8) + 2
+ 0157  B8 0011		   *	    mov    ax, +00011h
+ 015A  50		   *	    push   ax
+ 015B  B8 003C		   *	    mov    ax, +0003Ch
+ 015E  50		   *	    push   ax
+ 015F  E8 0000 E	   *	    call   SetCurPos
+
+ 0162  C3			        ret
+
+ 0163				DispMenu ENDP
+
+
+
+				;* Press - Displays a prompt, then waits for a key press.
+				;*
+				;* Uses:    vconfig - Video configuration structure (initialized
+				;*          by calling the GetVidConfig procedure)
+				;*
+				;* Return:  None
+
+ 0163				Press   PROC NEAR
+
+				        ; Write string, pass row, column, and string address
+				        INVOKE StrWrite, vconfig.rows, 50, ADDR PresMsg
+ 0163  A0 0002 E	   *	    mov    al, byte  ptr vconfig+002h
+ 0166  32 E4		   *	    xor    ah, ah
+ 0168  50		   *	    push   ax
+ 0169  B8 0032		   *	    mov    ax, +00032h
+ 016C  50		   *	    push   ax
+ 016D  8D 06 000F R	   *	    lea    ax, PresMsg
+ 0171  50		   *	    push   ax
+ 0172  E8 0000 E	   *	    call   StrWrite
+
+				        ; Park cursor at prompt, pass row and column
+				        INVOKE  SetCurPos, vconfig.rows, 48
+ 0175  A0 0002 E	   *	    mov    al, byte  ptr vconfig+002h
+ 0178  32 E4		   *	    xor    ah, ah
+ 017A  50		   *	    push   ax
+ 017B  B8 0030		   *	    mov    ax, +00030h
+ 017E  50		   *	    push   ax
+ 017F  E8 0000 E	   *	    call   SetCurPos
+
+				        ; Poll for keyboard selection while updating time
+				        ; Pass row and column
+				        INVOKE  GetKeyClock, CLKROW, CLKCOL
+ 0182  33 C0		   *	    xor    ax, ax
+ 0184  50		   *	    push   ax
+ 0185  B8 003E		   *	    mov    ax, +0003Eh
+ 0188  50		   *	    push   ax
+ 0189  E8 0000 E	   *	    call   GetKeyClock
+
+ 018C  C3			        ret
+
+ 018D				Press   ENDP
+
+
+
+				;* GetVidinfo - Initializes video configuration message for display.
+				;*
+				;* Uses:    vconfig - Video configuration structure (initialized
+				;*          by calling the GetVidConfig procedure)
+				;*
+				;* Return:  None
+
+ 018D				GetVidinfo PROC NEAR
+
+ 018D  1E			        push    ds
+ 018E  07			        pop     es                      ; Point ES to data segment
+ 018F  B0 04			        mov     al, 4                   ; Find index to 4-character
+ 0191  F6 26 0005 E		        mul     vconfig.adapter         ;   group in string
+ 0195  05 0102 R		        add     ax, OFFSET AdapStr      ; Point AX to proper group
+ 0198  8B F0			        mov     si, ax                  ; Put pointer in SI
+ 019A  8D 3E 012F R		        lea     di, VidMsg1[LEN1]       ; Point to 1st line of message
+ 019E  B9 0002			        mov     cx, 2                   ; Copy 4 letters (adapter
+ 01A1  F3/ A5			        rep     movsw                   ;   designation) to message
+
+ 01A3  BE 00EE R		        mov     si, OFFSET MonoStr      ; Assume display is monochrome
+				        .IF     vconfig.display != MONO ; If color display,
+ 01A6  80 3E 0004 E 00	   *	    cmp    vconfig . display, MONO
+ 01AB  74 03		   *	    je     @C000D
+ 01AD  BE 00F8 R		        mov     si, OFFSET ClrStr       ;   point to "color" string
+				        .ENDIF
+ 01B0			   *@C000D:
+ 01B0  8D 3E 014D R		        lea     di, VidMsg2[LEN1]       ; Point to 2nd line of message
+ 01B4  B9 0005			        mov     cx, 5                   ; Copy 10 chars ("monochrome"
+ 01B7  F3/ A5			        rep     movsw                   ;   or "color     ") to msg
+
+				        ; Note that IntToAsc can't be invoked because of its
+				        ; register calling convention
+ 01B9  A0 0000 E		        mov     al, vconfig.mode
+ 01BC  98			        cbw                             ; AX = video mode
+ 01BD  E8 0000 E		        call    IntToAsc                ; Convert AX to ASCII
+ 01C0  86 E0			        xchg    ah, al                  ; Flip bytes for word write
+ 01C2  A3 0171 R		        mov     WORD PTR VidMsg3[LEN1], ax  ; Insert in message string
+
+ 01C5  A0 0002 E		        mov     al, vconfig.rows
+ 01C8  98			        cbw
+ 01C9  40			        inc     ax                      ; AX = number of screen rows
+ 01CA  E8 0000 E		        call    IntToAsc                ; Convert to ASCII
+ 01CD  86 E0			        xchg    ah, al                  ; Flip bytes for word write
+ 01CF  A3 018D R		        mov     WORD PTR VidMsg4[LEN1], ax  ; Insert in message string
+ 01D2  C3			        ret
+
+ 01D3				GetVidinfo ENDP
+
+
+
+				;* GetMemInfo - Initializes memory information message.
+				;*
+				;* Return:  None
+
+ 01D3				GetMemInfo PROC NEAR
+
+				        ; Get total memory in DX, available memory in AX
+				        INVOKE  GetMem
+ 01D3  E8 0000 E	   *	    call   GetMem
+
+ 01D6  50			        push    ax
+ 01D7  8B C2			        mov     ax, dx
+ 01D9  E8 0000 E		        call    IntToAsc                ; Convert AX to ASCII
+ 01DC  86 F2			        xchg    dh, dl                  ; Flip bytes for word write
+ 01DE  86 E0			        xchg    ah, al
+ 01E0  89 16 01A9 R		        mov     WORD PTR MemMsg1[LEN1], dx      ; Insert in message
+ 01E4  A3 01AB R		        mov     WORD PTR MemMsg1[LEN1+2], ax    ;   string
+ 01E7  58			        pop     ax                              ; Recover avail memory #
+ 01E8  E8 0000 E		        call    IntToAsc                        ; Convert to ASCII
+ 01EB  86 F2			        xchg    dh, dl                          ; Flip bytes for word write
+ 01ED  86 E0			        xchg    ah, al
+ 01EF  89 16 01CA R		        mov     WORD PTR MemMsg2[LEN1], dx      ; Insert in message
+ 01F3  A3 01CC R		        mov     WORD PTR MemMsg2[LEN1+2], ax    ;   string
+ 01F6  C3			        ret
+
+ 01F7				GetMemInfo ENDP
+
+
+				;* CheckPrinter - Initializes printer status message.
+				;*
+				;* Shows:   Instruction - movsb
+				;*
+				;* Return:  None
+
+ 01F7				CheckPrinter PROC NEAR
+
+ 01F7  1E			        push    ds
+ 01F8  07			        pop     es                      ; Point ES to data segment
+ 01F9  BE 002D R		        mov     si, OFFSET yes          ; Assume answer is "yes"
+
+				        ; Check if printer ready
+				        INVOKE  VeriPrint
+ 01FC  E8 0000 E	   *	    call   VeriPrint
+
+				        .IF     al == 0                 ; If not ready,
+ 01FF  0A C0		   *	    or	al, al
+ 0201  75 03		   *	    jne    @C000F
+ 0203  BE 0030 R		        mov     si, OFFSET no           ;   point to "no" answer
+				        .ENDIF
+ 0206			   *@C000F:
+ 0206  8D 3E 01EB R		        lea     di, PrnMsg[LEN1]        ; Point to print message
+ 020A  B9 0003			        mov     cx, 3                   ; Copy 3 letters (either "yes"
+ 020D  F3/ A4			        rep     movsb                   ;   or "no ") to message
+ 020F  C3			        ret
+
+ 0210				CheckPrinter ENDP
+
+
+
+				;* CheckAnsi - Initializes status message for ANSI driver.
+				;*
+				;* Return:  None
+
+ 0210				CheckAnsi PROC NEAR
+
+ 0210  1E			        push    ds
+ 0211  07			        pop     es                      ; Point ES to data segment
+ 0212  BE 002D R		        mov     si, OFFSET yes          ; Assume answer is "yes"
+
+				        ; Check if ANSI driver is installed
+				        INVOKE  VeriAnsi
+ 0215  E8 0000 E	   *	    call   VeriAnsi
+
+				        .IF     al == 0                 ; If not installed,
+ 0218  0A C0		   *	    or	al, al
+ 021A  75 03		   *	    jne    @C0011
+ 021C  BE 0030 R		        mov     si, OFFSET no           ;   point to "no" answer
+				        .ENDIF
+ 021F			   *@C0011:
+ 021F  8D 3E 0208 R		        lea     di, AnsiMsg[LEN1]       ; Point to ansi message
+ 0223  B9 0003			        mov     cx, 3                   ; Copy 3 letters (either "yes"
+ 0226  F3/ A4			        rep     movsb                   ;   or "no ") to message
+ 0228  C3			        ret
+
+ 0229				CheckAnsi ENDP
+
+
+
+				;* CheckCoproc - Initializes coprocessor status message.
+				;*
+				;* Return:  None
+
+ 0229				CheckCoproc PROC NEAR
+
+ 0229  1E			        push    ds
+ 022A  07			        pop     es                      ; Point ES to data segment
+ 022B  BE 002D R		        mov     si, OFFSET yes          ; Assume answer is "yes"
+
+				        ; Check for coprocessor
+				        INVOKE  VeriCop
+ 022E  E8 0000 E	   *	    call   VeriCop
+
+				        .IF     al == 0                 ; If not installed:
+ 0231  0A C0		   *	    or	al, al
+ 0233  75 03		   *	    jne    @C0013
+ 0235  BE 0030 R		        mov     si, OFFSET no           ; Point to "no" answer
+				        .ENDIF
+ 0238			   *@C0013:
+ 0238  8D 3E 0225 R		        lea     di, CopMsg[LEN1]        ; Point to coprocessor message
+ 023C  B9 0003			        mov     cx, 3                   ; Copy 3 letters (either "yes"
+ 023F  F3/ A4			        rep     movsb                   ;   or "no ") to message
+ 0241  C3			        ret
+
+ 0242				CheckCoproc ENDP
+
+
+				;* GetConfig - Displays system configuration information.
+
+ 0242				GetConfig PROC NEAR
+
+				        INVOKE  GetVidinfo              ; Initialize video message
+ 0242  E8 FF48		   *	    call   GetVidinfo
+				        INVOKE  GetMemInfo              ; Initialize memory message
+ 0245  E8 FF8B		   *	    call   GetMemInfo
+				        INVOKE  CheckPrinter            ; Initialize printer message
+ 0248  E8 FFAC		   *	    call   CheckPrinter
+				        INVOKE  CheckAnsi               ; Initialize ANSI driver msg
+ 024B  E8 FFC2		   *	    call   CheckAnsi
+				        INVOKE  CheckCoproc             ; Initialize coprocessor msg
+ 024E  E8 FFD8		   *	    call   CheckCoproc
+
+				        Box 4, 13, 20, 67               ; Clear screen with box
+ 0251  B8 0600		     1	    mov ax, 0600h                       
+ 0254  8A 3E 0009 R	     1	    mov bh, Filmono                     
+ 0258  80 3E 0005 E 00	   *	    cmp    vconfig . adapter, MDA
+ 025D  74 04		   *	    je     @C0015
+ 025F  8A 3E 0005 R	     1	    mov bh, Filcolr                     
+ 0263			   *@C0015:
+ 0263  B5 04		     1	    mov ch, 4
+ 0265  B1 0D		     1	    mov cl, 13                        
+ 0267  B6 14		     1	    mov dh, 20
+ 0269  B2 43		     1	    mov dl, 67                        
+ 026B  CD 10		     1	    int 10h                             
+
+				        ; Display configuration information
+				        ; For each line, pass row, column, and string address
+				        INVOKE  StrWrite,  6, 23, ADDR VidMsg1
+ 026D  B8 0006		   *	    mov    ax, +00006h
+ 0270  50		   *	    push   ax
+ 0271  B8 0017		   *	    mov    ax, +00017h
+ 0274  50		   *	    push   ax
+ 0275  8D 06 0116 R	   *	    lea    ax, VidMsg1
+ 0279  50		   *	    push   ax
+ 027A  E8 0000 E	   *	    call   StrWrite
+				        INVOKE  StrWrite,  7, 23, ADDR VidMsg2
+ 027D  B8 0007		   *	    mov    ax, +00007h
+ 0280  50		   *	    push   ax
+ 0281  B8 0017		   *	    mov    ax, +00017h
+ 0284  50		   *	    push   ax
+ 0285  8D 06 0134 R	   *	    lea    ax, VidMsg2
+ 0289  50		   *	    push   ax
+ 028A  E8 0000 E	   *	    call   StrWrite
+				        INVOKE  StrWrite,  8, 23, ADDR VidMsg3
+ 028D  B8 0008		   *	    mov    ax, +00008h
+ 0290  50		   *	    push   ax
+ 0291  B8 0017		   *	    mov    ax, +00017h
+ 0294  50		   *	    push   ax
+ 0295  8D 06 0158 R	   *	    lea    ax, VidMsg3
+ 0299  50		   *	    push   ax
+ 029A  E8 0000 E	   *	    call   StrWrite
+				        INVOKE  StrWrite,  9, 23, ADDR VidMsg4
+ 029D  B8 0009		   *	    mov    ax, +00009h
+ 02A0  50		   *	    push   ax
+ 02A1  B8 0017		   *	    mov    ax, +00017h
+ 02A4  50		   *	    push   ax
+ 02A5  8D 06 0174 R	   *	    lea    ax, VidMsg4
+ 02A9  50		   *	    push   ax
+ 02AA  E8 0000 E	   *	    call   StrWrite
+				        INVOKE  StrWrite, 11, 23, ADDR MemMsg1
+ 02AD  B8 000B		   *	    mov    ax, +0000Bh
+ 02B0  50		   *	    push   ax
+ 02B1  B8 0017		   *	    mov    ax, +00017h
+ 02B4  50		   *	    push   ax
+ 02B5  8D 06 0190 R	   *	    lea    ax, MemMsg1
+ 02B9  50		   *	    push   ax
+ 02BA  E8 0000 E	   *	    call   StrWrite
+				        INVOKE  StrWrite, 12, 23, ADDR MemMsg2
+ 02BD  B8 000C		   *	    mov    ax, +0000Ch
+ 02C0  50		   *	    push   ax
+ 02C1  B8 0017		   *	    mov    ax, +00017h
+ 02C4  50		   *	    push   ax
+ 02C5  8D 06 01B1 R	   *	    lea    ax, MemMsg2
+ 02C9  50		   *	    push   ax
+ 02CA  E8 0000 E	   *	    call   StrWrite
+				        INVOKE  StrWrite, 14, 23, ADDR PrnMsg
+ 02CD  B8 000E		   *	    mov    ax, +0000Eh
+ 02D0  50		   *	    push   ax
+ 02D1  B8 0017		   *	    mov    ax, +00017h
+ 02D4  50		   *	    push   ax
+ 02D5  8D 06 01D2 R	   *	    lea    ax, PrnMsg
+ 02D9  50		   *	    push   ax
+ 02DA  E8 0000 E	   *	    call   StrWrite
+				        INVOKE  StrWrite, 16, 23, ADDR AnsiMsg
+ 02DD  B8 0010		   *	    mov    ax, +00010h
+ 02E0  50		   *	    push   ax
+ 02E1  B8 0017		   *	    mov    ax, +00017h
+ 02E4  50		   *	    push   ax
+ 02E5  8D 06 01EF R	   *	    lea    ax, AnsiMsg
+ 02E9  50		   *	    push   ax
+ 02EA  E8 0000 E	   *	    call   StrWrite
+				        INVOKE  StrWrite, 18, 23, ADDR CopMsg
+ 02ED  B8 0012		   *	    mov    ax, +00012h
+ 02F0  50		   *	    push   ax
+ 02F1  B8 0017		   *	    mov    ax, +00017h
+ 02F4  50		   *	    push   ax
+ 02F5  8D 06 020C R	   *	    lea    ax, CopMsg
+ 02F9  50		   *	    push   ax
+ 02FA  E8 0000 E	   *	    call   StrWrite
+
+				        ; Prompt for keypress
+				        INVOKE  Press
+ 02FD  E8 FE63		   *	    call   Press
+
+ 0300  C3			        ret
+
+ 0301				GetConfig ENDP
+
+
+
+				;* Speaker - Sounds speaker with ascending frequencies.
+				;*
+				;* Return:  None
+
+ 0301				Speaker PROC NEAR
+
+ 0301  2B C0			        sub     ax, ax
+				        .REPEAT
+ 0303			   *@C0017:
+ 0303  83 C0 64			        add     ax, 100                 ; Start with frequency 100
+ 0306  50			        push    ax                      ; Save frequency
+
+				        ; Beep speaker, pass frequency and duration
+				        INVOKE  Sound, ax, 1
+ 0307  50		   *	    push   ax
+ 0308  B8 0001		   *	    mov    ax, +00001h
+ 030B  50		   *	    push   ax
+ 030C  E8 0000 E	   *	    call   Sound
+
+ 030F  58			        pop     ax                      ; Recover frequency
+				        .UNTIL  ax > 3000               ; Continue to frequency 3000
+ 0310  3D 0BB8		   *	    cmp    ax, 00BB8h
+ 0313  76 EE		   *	    jbe    @C0017
+ 0315  C3			        ret
+
+ 0316				Speaker ENDP
+
+
+
+				;* SetLines - Toggles between 25/43-line mode for EGA or 25/43/50-line mode
+				;* for VGA.
+				;*
+				;* Uses:    vconfig - Video configuration structure (initialized
+				;*          by calling the GetVidConfig procedure)
+				;*
+				;* Return:  None
+
+ 0316				SetLines PROC NEAR
+
+ 0316  B0 19			        mov     al, 25                  ; Assume toggle to 25 line
+ 0318  80 3E 0002 E 31		        cmp     vconfig.rows, 49        ; Current mode 50 lines?
+ 031D  74 14			        je      toggle25                ; Yes?  Toggle VGA to 25-line
+ 031F  80 3E 0002 E 2A		        cmp     vconfig.rows, 42        ; Current mode 43 lines?
+ 0324  75 0B			        jne     toggle43                ; No?  Must be 25
+ 0326  80 3E 0005 E 03		        cmp     vconfig.adapter, EGA    ; Yes?  And is adapter EGA?
+ 032B  74 06			        je      toggle25                ; Yes?  Then toggle to 25 line
+ 032D  B0 32			        mov     al, 50                  ; No?  Toggle VGA to 50 line
+ 032F  EB 02			        jmp     toggle25
+ 0331				toggle43:
+ 0331  B0 2B			        mov     al, 43                  ; If currently 25 lines, make
+				                                        ;   either EGA or VGA 43 lines
+ 0333				toggle25:
+				        ; Change line mode, pass lines
+				        INVOKE  SetLineMode, ax
+ 0333  50		   *	    push   ax
+ 0334  E8 0000 E	   *	    call   SetLineMode
+
+				        .IF     al == 0                 ; If no error,
+ 0337  0A C0		   *	    or	al, al
+ 0339  75 05		   *	    jne    @C0019
+				        INVOKE  GetVidConfig            ;   update configuration structure
+ 033B  E8 0000 E	   *	    call   GetVidConfig
+				        .ELSE                           ; Else,
+ 033E  EB 2F		   *	    jmp    @C001B
+ 0340			   *@C0019:
+				        Box 16, 13, 20, 67              ;   display error message
+ 0340  B8 0600		     1	    mov ax, 0600h                       
+ 0343  8A 3E 0009 R	     1	    mov bh, Filmono                     
+ 0347  80 3E 0005 E 00	   *	    cmp    vconfig . adapter, MDA
+ 034C  74 04		   *	    je     @C001C
+ 034E  8A 3E 0005 R	     1	    mov bh, Filcolr                     
+ 0352			   *@C001C:
+ 0352  B5 10		     1	    mov ch, 16
+ 0354  B1 0D		     1	    mov cl, 13                        
+ 0356  B6 14		     1	    mov dh, 20
+ 0358  B2 43		     1	    mov dl, 67                        
+ 035A  CD 10		     1	    int 10h                             
+
+				        ; Write line message, pass row, column, and string address
+				        INVOKE  StrWrite, 18, 17, ADDR LineMsg
+ 035C  B8 0012		   *	    mov    ax, +00012h
+ 035F  50		   *	    push   ax
+ 0360  B8 0011		   *	    mov    ax, +00011h
+ 0363  50		   *	    push   ax
+ 0364  8D 06 0229 R	   *	    lea    ax, LineMsg
+ 0368  50		   *	    push   ax
+ 0369  E8 0000 E	   *	    call   StrWrite
+
+				        INVOKE  Press
+ 036C  E8 FDF4		   *	    call   Press
+				        .ENDIF
+ 036F			   *@C001B:
+
+ 036F  C3			        ret
+
+ 0370				SetLines ENDP
+
+
+
+				;* PopWindows - Demonstrates windowing with the WinOpen and WinClose
+				;* procedures.
+				;*
+				;* Uses:    vconfig - Video configuration structure (initialized
+				;*          by calling the GetVidConfig procedure)
+				;*
+				;* Return:  None
+
+ 0370				PopWindows PROC NEAR
+
+				        LOCAL Row1:WORD, Col1:WORD, Row2:WORD, Col2:WORD
+				        LOCAL Index:BYTE, Adr[4]:WORD, Csize:WORD
+
+				        ; Get current cursor size
+ 0370  55		   *	    push   bp
+ 0371  8B EC		   *	    mov    bp, sp
+ 0373  83 C4 EC		   *	    add    sp, 0FFECh
+				        INVOKE  GetCurSize
+ 0376  E8 0000 E	   *	    call   GetCurSize
+
+ 0379  89 46 EC			        mov     Csize, ax               ; Store it
+ 037C  0C 20			        or      al, 100000y             ; Set 5th bit for cursor off
+ 037E  8A D8			        mov     bl, al
+
+				        ; Set cursor size
+				        ; Pass arbitrary top and bottom lines with visibility bit off
+				        INVOKE  SetCurSize, BYTE PTR Csize[1], bl
+ 0380  8A 46 ED		   *	    mov    al, byte  ptr ss:[bp]+0EDh
+ 0383  32 E4		   *	    xor    ah, ah
+ 0385  50		   *	    push   ax
+ 0386  8A C3		   *	    mov    al, bl
+ 0388  32 E4		   *	    xor    ah, ah
+ 038A  50		   *	    push   ax
+ 038B  E8 0000 E	   *	    call   SetCurSize
+
+ 038E  C6 06 025E R 30		        mov     WinMsg[LEN3], "0"       ; Initialize window message
+ 0393  C7 46 FE 0004		        mov     Row1, 4                 ; Initialize window coords
+ 0398  C7 46 FC 000A		        mov     Col1, 10
+ 039D  C7 46 FA 0014		        mov     Row2, 20
+ 03A2  C7 46 F8 0022		        mov     Col2, 34
+ 03A7  C6 46 F7 00		        mov     Index, 0
+ 03AB  B9 0004			        mov     cx, 4                   ; Open 4 windows
+				        .REPEAT
+ 03AE			   *@C001E:
+ 03AE  51			        push    cx                      ; Save loop counter
+ 03AF  8A 46 F7			        mov     al, Index
+ 03B2  BB 0009 R		        mov     bx, OFFSET Filmono      ; BX points to fill attributes
+				        .IF     vconfig.display != MONO ; If not monochrome,
+ 03B5  80 3E 0004 E 00	   *	    cmp    vconfig . display, MONO
+ 03BA  74 03		   *	    je     @C001F
+ 03BC  BB 0005 R		        mov     bx, OFFSET Filcolr      ;   repoint to color attributes
+				        .ENDIF
+ 03BF			   *@C001F:
+ 03BF  D7			        xlat                            ; Get attributes in succession
+
+				        ; Save old window and open new
+				        ; Pass top, left, bottom, right, and attribute in AX
+				        INVOKE  WinOpen, Row1, Col1, Row2, Col2, ax
+ 03C0  FF 76 FE		   *	    push   word  ptr ss:[bp]+0FFFEh
+ 03C3  FF 76 FC		   *	    push   word  ptr ss:[bp]+0FFFCh
+ 03C6  FF 76 FA		   *	    push   word  ptr ss:[bp]+0FFFAh
+ 03C9  FF 76 F8		   *	    push   word  ptr ss:[bp]+0FFF8h
+ 03CC  50		   *	    push   ax
+ 03CD  E8 0000 E	   *	    call   WinOpen
+
+ 03D0  5F			        pop     di                      ; Recover counter in DI
+ 03D1  57			        push    di                      ;   and save it again
+ 03D2  4F			        dec     di
+ 03D3  D1 E7			        shl     di, 1                   ; Make DI a word index
+ 03D5  89 43 EE			        mov     Adr[di], ax             ; Save address of allocated
+				                                        ;   block returned by WinOpen
+ 03D8  FE 06 025E R		        inc     WinMsg[LEN3]            ; Increment window number
+ 03DC  8B 5E FE			        mov     bx, Row1
+ 03DF  80 C3 02			        add     bl, 2                   ; Message row
+ 03E2  8B 4E FC			        mov     cx, Col1
+ 03E5  80 C1 09			        add     cl, 9                   ; Message column
+
+				        ; Write window message, pass row, column, and string address
+				        INVOKE StrWrite, bx, cx, ADDR WinMsg
+ 03E8  53		   *	    push   bx
+ 03E9  51		   *	    push   cx
+ 03EA  8D 06 0257 R	   *	    lea    ax, WinMsg
+ 03EE  50		   *	    push   ax
+ 03EF  E8 0000 E	   *	    call   StrWrite
+
+				        ; Pause, pass 18 ticks (about 1 second)
+				        INVOKE  Pause, 18
+ 03F2  B8 0012		   *	    mov    ax, +00012h
+ 03F5  50		   *	    push   ax
+ 03F6  E8 0000 E	   *	    call   Pause
+
+ 03F9  83 46 FE 02		        add     Row1, 2                 ; Adjust coordinates for
+ 03FD  83 46 FC 0D		        add     Col1, 13                ;   next window
+ 0401  83 6E FA 02		        sub     Row2, 2
+ 0405  83 46 F8 0D		        add     Col2, 13
+ 0409  FE 46 F7			        inc     Index
+ 040C  59			        pop     cx                      ; Recover counter
+				        .UNTILCXZ
+ 040D  E2 9F		   *	    loop   @C001E
+
+ 040F  B9 0004			        mov     cx, 4                   ; Close 4 windows
+ 0412  2B FF			        sub     di, di                  ; DI = index to addresses
+
+				        .REPEAT
+ 0414			   *@C0021:
+ 0414  51			        push    cx                      ; Save loop counter
+
+				        ; Close a window, pass address of the window
+				        INVOKE  WinClose, Adr[di]
+ 0415  FF 73 EE		   *	    push   word  ptr ss:[bp+di]+0FFEEh
+ 0418  E8 0000 E	   *	    call   WinClose
+
+				        ; Pause, pass 18 ticks (about 1 second)
+				        INVOKE  Pause, 18
+ 041B  B8 0012		   *	    mov    ax, +00012h
+ 041E  50		   *	    push   ax
+ 041F  E8 0000 E	   *	    call   Pause
+
+ 0422  83 C7 02			        add     di, 2                   ; Point to next address
+ 0425  59			        pop     cx                      ; Recover counter
+				        .UNTILCXZ                       ; Close another window
+ 0426  E2 EC		   *	    loop   @C0021
+
+ 0428  8B 46 EC			        mov     ax, Csize               ; Get original cursor size
+
+				        ; Set cursor size, pass top and bottom lines
+				        INVOKE  SetCurSize, BYTE PTR Csize[1], BYTE PTR Csize[0]
+ 042B  8A 46 ED		   *	    mov    al, byte  ptr ss:[bp]+0EDh
+ 042E  32 E4		   *	    xor    ah, ah
+ 0430  50		   *	    push   ax
+ 0431  8A 46 EC		   *	    mov    al, byte  ptr ss:[bp]+0ECh
+ 0434  32 E4		   *	    xor    ah, ah
+ 0436  50		   *	    push   ax
+ 0437  E8 0000 E	   *	    call   SetCurSize
+
+				        ret
+ 043A  8B E5		   *	    mov    sp, bp
+ 043C  5D		   *	    pop    bp
+ 043D  C3		   *	    ret    00000h
+
+ 043E				PopWindows ENDP
+
+
+
+				;* SetAttrs - Changes display attributes for the main menu.
+				;*
+				;* Uses:    vconfig - Video configuration structure (initialized
+				;*          by calling the GetVidConfig procedure)
+				;*
+				;* Return:  None
+
+ 043E				SetAttrs PROC NEAR
+
+				        Box 3, 12, 23, 68
+ 043E  B8 0600		     1	    mov ax, 0600h                       
+ 0441  8A 3E 0009 R	     1	    mov bh, Filmono                     
+ 0445  80 3E 0005 E 00	   *	    cmp    vconfig . adapter, MDA
+ 044A  74 04		   *	    je     @C0022
+ 044C  8A 3E 0005 R	     1	    mov bh, Filcolr                     
+ 0450			   *@C0022:
+ 0450  B5 03		     1	    mov ch, 3
+ 0452  B1 0C		     1	    mov cl, 12                        
+ 0454  B6 17		     1	    mov dh, 23
+ 0456  B2 44		     1	    mov dl, 68                        
+ 0458  CD 10		     1	    int 10h                             
+				        .IF     vconfig.adapter == MDA  ; If monochrome?
+ 045A  80 3E 0005 E 00	   *	    cmp    vconfig . adapter, MDA
+ 045F  75 69		   *	    jne    @C0024
+
+				        ; Write monochrome menu
+				        ; For each line, pass row, column, and string address
+				        INVOKE StrWrite,  8, 32, ADDR CMsg13
+ 0461  B8 0008		   *	    mov    ax, +00008h
+ 0464  50		   *	    push   ax
+ 0465  B8 0020		   *	    mov    ax, +00020h
+ 0468  50		   *	    push   ax
+ 0469  8D 06 0424 R	   *	    lea    ax, CMsg13
+ 046D  50		   *	    push   ax
+ 046E  E8 0000 E	   *	    call   StrWrite
+				        INVOKE StrWrite,  9, 32, ADDR CMsg14
+ 0471  B8 0009		   *	    mov    ax, +00009h
+ 0474  50		   *	    push   ax
+ 0475  B8 0020		   *	    mov    ax, +00020h
+ 0478  50		   *	    push   ax
+ 0479  8D 06 042B R	   *	    lea    ax, CMsg14
+ 047D  50		   *	    push   ax
+ 047E  E8 0000 E	   *	    call   StrWrite
+				        INVOKE StrWrite, 10, 36, ADDR CMsg15
+ 0481  B8 000A		   *	    mov    ax, +0000Ah
+ 0484  50		   *	    push   ax
+ 0485  B8 0024		   *	    mov    ax, +00024h
+ 0488  50		   *	    push   ax
+ 0489  8D 06 043B R	   *	    lea    ax, CMsg15
+ 048D  50		   *	    push   ax
+ 048E  E8 0000 E	   *	    call   StrWrite
+				        INVOKE StrWrite, 11, 36, ADDR CMsg16
+ 0491  B8 000B		   *	    mov    ax, +0000Bh
+ 0494  50		   *	    push   ax
+ 0495  B8 0024		   *	    mov    ax, +00024h
+ 0498  50		   *	    push   ax
+ 0499  8D 06 0444 R	   *	    lea    ax, CMsg16
+ 049D  50		   *	    push   ax
+ 049E  E8 0000 E	   *	    call   StrWrite
+				        INVOKE StrWrite, 12, 36, ADDR CMsg17
+ 04A1  B8 000C		   *	    mov    ax, +0000Ch
+ 04A4  50		   *	    push   ax
+ 04A5  B8 0024		   *	    mov    ax, +00024h
+ 04A8  50		   *	    push   ax
+ 04A9  8D 06 0451 R	   *	    lea    ax, CMsg17
+ 04AD  50		   *	    push   ax
+ 04AE  E8 0000 E	   *	    call   StrWrite
+				        INVOKE StrWrite, 13, 36, ADDR CMsg18
+ 04B1  B8 000D		   *	    mov    ax, +0000Dh
+ 04B4  50		   *	    push   ax
+ 04B5  B8 0024		   *	    mov    ax, +00024h
+ 04B8  50		   *	    push   ax
+ 04B9  8D 06 045E R	   *	    lea    ax, CMsg18
+ 04BD  50		   *	    push   ax
+ 04BE  E8 0000 E	   *	    call   StrWrite
+
+ 04C1  A0 0009 R		        mov     al, Filmono             ; Initialize Filsub variable
+ 04C4  A2 000E R		        mov     Filsub, al              ;   for monochrome
+
+				        .ELSE
+ 04C7  E9 00C6		   *	    jmp    @C0026
+ 04CA			   *@C0024:
+
+				        ; Write color menu
+				        ; For each line, pass row, column, and string address
+				        INVOKE StrWrite,  4, 18, ADDR CMsg1
+ 04CA  B8 0004		   *	    mov    ax, +00004h
+ 04CD  50		   *	    push   ax
+ 04CE  B8 0012		   *	    mov    ax, +00012h
+ 04D1  50		   *	    push   ax
+ 04D2  8D 06 0260 R	   *	    lea    ax, CMsg1
+ 04D6  50		   *	    push   ax
+ 04D7  E8 0000 E	   *	    call   StrWrite
+				        INVOKE StrWrite,  5, 18, ADDR CMsg2
+ 04DA  B8 0005		   *	    mov    ax, +00005h
+ 04DD  50		   *	    push   ax
+ 04DE  B8 0012		   *	    mov    ax, +00012h
+ 04E1  50		   *	    push   ax
+ 04E2  8D 06 027E R	   *	    lea    ax, CMsg2
+ 04E6  50		   *	    push   ax
+ 04E7  E8 0000 E	   *	    call   StrWrite
+				        INVOKE StrWrite,  6, 22, ADDR CMsg3
+ 04EA  B8 0006		   *	    mov    ax, +00006h
+ 04ED  50		   *	    push   ax
+ 04EE  B8 0016		   *	    mov    ax, +00016h
+ 04F1  50		   *	    push   ax
+ 04F2  8D 06 02AA R	   *	    lea    ax, CMsg3
+ 04F6  50		   *	    push   ax
+ 04F7  E8 0000 E	   *	    call   StrWrite
+				        INVOKE StrWrite,  7, 22, ADDR CMsg4
+ 04FA  B8 0007		   *	    mov    ax, +00007h
+ 04FD  50		   *	    push   ax
+ 04FE  B8 0016		   *	    mov    ax, +00016h
+ 0501  50		   *	    push   ax
+ 0502  8D 06 02D2 R	   *	    lea    ax, CMsg4
+ 0506  50		   *	    push   ax
+ 0507  E8 0000 E	   *	    call   StrWrite
+				        INVOKE StrWrite, 10, 18, ADDR CMsg5
+ 050A  B8 000A		   *	    mov    ax, +0000Ah
+ 050D  50		   *	    push   ax
+ 050E  B8 0012		   *	    mov    ax, +00012h
+ 0511  50		   *	    push   ax
+ 0512  8D 06 02FA R	   *	    lea    ax, CMsg5
+ 0516  50		   *	    push   ax
+ 0517  E8 0000 E	   *	    call   StrWrite
+				        INVOKE StrWrite, 11, 18, ADDR CMsg6
+ 051A  B8 000B		   *	    mov    ax, +0000Bh
+ 051D  50		   *	    push   ax
+ 051E  B8 0012		   *	    mov    ax, +00012h
+ 0521  50		   *	    push   ax
+ 0522  8D 06 0326 R	   *	    lea    ax, CMsg6
+ 0526  50		   *	    push   ax
+ 0527  E8 0000 E	   *	    call   StrWrite
+				        INVOKE StrWrite, 14, 18, ADDR CMsg7
+ 052A  B8 000E		   *	    mov    ax, +0000Eh
+ 052D  50		   *	    push   ax
+ 052E  B8 0012		   *	    mov    ax, +00012h
+ 0531  50		   *	    push   ax
+ 0532  8D 06 0352 R	   *	    lea    ax, CMsg7
+ 0536  50		   *	    push   ax
+ 0537  E8 0000 E	   *	    call   StrWrite
+				        INVOKE StrWrite, 15, 18, ADDR CMsg8
+ 053A  B8 000F		   *	    mov    ax, +0000Fh
+ 053D  50		   *	    push   ax
+ 053E  B8 0012		   *	    mov    ax, +00012h
+ 0541  50		   *	    push   ax
+ 0542  8D 06 0360 R	   *	    lea    ax, CMsg8
+ 0546  50		   *	    push   ax
+ 0547  E8 0000 E	   *	    call   StrWrite
+				        INVOKE StrWrite, 16, 22, ADDR CMsg9
+ 054A  B8 0010		   *	    mov    ax, +00010h
+ 054D  50		   *	    push   ax
+ 054E  B8 0016		   *	    mov    ax, +00016h
+ 0551  50		   *	    push   ax
+ 0552  8D 06 038C R	   *	    lea    ax, CMsg9
+ 0556  50		   *	    push   ax
+ 0557  E8 0000 E	   *	    call   StrWrite
+				        INVOKE StrWrite, 17, 22, ADDR CMsg10
+ 055A  B8 0011		   *	    mov    ax, +00011h
+ 055D  50		   *	    push   ax
+ 055E  B8 0016		   *	    mov    ax, +00016h
+ 0561  50		   *	    push   ax
+ 0562  8D 06 03B0 R	   *	    lea    ax, CMsg10
+ 0566  50		   *	    push   ax
+ 0567  E8 0000 E	   *	    call   StrWrite
+				        INVOKE StrWrite, 18, 22, ADDR CMsg11
+ 056A  B8 0012		   *	    mov    ax, +00012h
+ 056D  50		   *	    push   ax
+ 056E  B8 0016		   *	    mov    ax, +00016h
+ 0571  50		   *	    push   ax
+ 0572  8D 06 03D8 R	   *	    lea    ax, CMsg11
+ 0576  50		   *	    push   ax
+ 0577  E8 0000 E	   *	    call   StrWrite
+				        INVOKE StrWrite, 19, 22, ADDR CMsg12
+ 057A  B8 0013		   *	    mov    ax, +00013h
+ 057D  50		   *	    push   ax
+ 057E  B8 0016		   *	    mov    ax, +00016h
+ 0581  50		   *	    push   ax
+ 0582  8D 06 03FE R	   *	    lea    ax, CMsg12
+ 0586  50		   *	    push   ax
+ 0587  E8 0000 E	   *	    call   StrWrite
+
+ 058A  A0 0005 R		        mov     al, Filcolr             ; Initialize Filsub variable
+ 058D  A2 000E R		        mov     Filsub, al              ;   for color
+				        .ENDIF
+ 0590			   *@C0026:
+
+				        ; Write menu message
+				        INVOKE StrWrite, 22, 15, ADDR Menu8
+ 0590  B8 0016		   *	    mov    ax, +00016h
+ 0593  50		   *	    push   ax
+ 0594  B8 000F		   *	    mov    ax, +0000Fh
+ 0597  50		   *	    push   ax
+ 0598  8D 06 00C6 R	   *	    lea    ax, Menu8
+ 059C  50		   *	    push   ax
+ 059D  E8 0000 E	   *	    call   StrWrite
+
+				        ; Park cursor at prompt, pass row and column
+				        INVOKE  SetCurPos, 22, 56
+ 05A0  B8 0016		   *	    mov    ax, +00016h
+ 05A3  50		   *	    push   ax
+ 05A4  B8 0038		   *	    mov    ax, +00038h
+ 05A7  50		   *	    push   ax
+ 05A8  E8 0000 E	   *	    call   SetCurPos
+
+				        .WHILE   1
+ 05AB			   *@C0027:
+
+				        ; Poll for keyboard selection while updating time
+				        ; Pass row and column
+				        INVOKE  GetKeyClock, CLKROW, CLKCOL
+ 05AB  33 C0		   *	    xor    ax, ax
+ 05AD  50		   *	    push   ax
+ 05AE  B8 003E		   *	    mov    ax, +0003Eh
+ 05B1  50		   *	    push   ax
+ 05B2  E8 0000 E	   *	    call   GetKeyClock
+
+				        .BREAK .IF al == ESCAPE         ; Quit if ESC key
+ 05B5  3C 1B		   *	    cmp    al, ESCAPE
+ 05B7  75 03 E9 0114	   *	    je     @C0028
+
+				        .IF (al >= 'a') && (al <= 'z')  ; Convert letters to uppercase
+ 05BC  3C 61		   *	    cmp    al, 'a'
+ 05BE  72 06		   *	    jb     @C002A
+ 05C0  3C 7A		   *	    cmp    al, 'z'
+ 05C2  77 02		   *	    ja     @C002A
+ 05C4  24 5F			        and     al, 5Fh                 ;   to make comparisons easier
+				        .ENDIF
+
+ 05C6			   *@C002A:
+ 05C6  3C 42			        cmp     al, 'B'                 ; Request blink toggle?
+ 05C8  74 3A			        je      blink
+ 05CA  3C 49			        cmp     al, 'I'                 ; Request intensity toggle?
+ 05CC  74 3D			        je      intense
+ 05CE  8A 1E 000E R		        mov     bl, Filsub              ; Get window display attribute
+ 05D2  80 3E 0005 E 00		        cmp     vconfig.adapter, MDA    ; Monochrome?
+ 05D7  75 39			        jne     iscolor                 ; No?  Jump to color selections
+ 05D9  3C 55			        cmp     al, 'U'                 ; Request underline toggle?
+ 05DB  74 14			        je      underline
+				        .CONTINUE .IF al != 'R'         ; If not reverse toggle,
+ 05DD  3C 52		   *	    cmp    al, 'R'
+ 05DF  75 CA		   *	    jne    @C0027
+				                                        ;   skip invalid key
+
+				; With cross-toggling between reverse, normal, and underline, three
+				; bit settings can exist in monochrome:  x111x000 for reverse, x000x111 for
+				; normal, and x000x001 for underline. Changing between the three involves
+				; more than simply using XOR to determine the current attribute; each
+				; condition must check for the other two.
+
+ 05E1				reverse:
+				        .IF     bl & 1                  ; If reverse video off,
+ 05E1  F6 C3 01		   *	    test   bl, 001h
+ 05E4  74 03		   *	    je     @C002E
+ 05E6  80 CB 07			        or      bl, 00000111y           ;   ensure normal bits are on
+				        .ENDIF
+
+ 05E9			   *@C002E:
+ 05E9  80 F3 77			        xor     bl, 01110111y           ; Toggle for reverse/normal
+ 05EC  B1 06			        mov     cl, 6                   ; Set code for MOV
+ 05EE  E9 00B7			        jmp     switch
+
+ 05F1				underline:
+				        .IF     bl & 1                  ; If reverse video on,
+ 05F1  F6 C3 01		   *	    test   bl, 001h
+ 05F4  74 06		   *	    je     @C0030
+ 05F6  80 E3 8F			        and     bl, 10001111y           ;   clear bits 4-6
+ 05F9  80 CB 07			        or      bl, 00000111y           ;   and set bits 0-2
+				        .ENDIF
+
+ 05FC			   *@C0030:
+ 05FC  80 F3 06			        xor     bl, 00000110y           ; Toggle bits 1-2 for underline
+ 05FF  B1 06			        mov     cl, 6                   ; Set code for MOV
+ 0601  E9 00A4			        jmp     switch
+
+				; Blink and intensity use the same bits for color and monochrome.
+
+ 0604				blink:
+ 0604  B3 80			        mov     bl, 10000000y           ; Set bit 7 for blink
+ 0606  B1 04			        mov     cl, 4                   ; Set code for XOR
+ 0608  E9 009D			        jmp     switch
+
+ 060B				intense:
+ 060B  B3 08			        mov     bl, 00001000y           ; Set bit 3 for intensity
+ 060D  B1 04			        mov     cl, 4                   ; Set code for XOR
+ 060F  E9 0096			        jmp     switch
+
+				; Enter this section only for color displays. First check for arrow keys,
+				; which increment or decrement the foreground or background bits of the
+				; current attribute stored in the variable Filsub. If arrow keys are not
+				; pressed, check for the F or A keys, which request specific colors for the
+				; foreground or background colors.
+
+ 0612				iscolor:
+ 0612  8A EB			        mov     ch, bl                  ; Copy current attribute to CH
+				        .IF     ah == 72                ; If up arrow,
+ 0614  80 FC 48		   *	    cmp    ah, 048h
+ 0617  75 0F		   *	    jne    @C0032
+ 0619  B1 04			        mov     cl, 4                   ;   increment bits 4-6
+ 061B  D2 ED			        shr     ch, cl                  ;   to next background color
+ 061D  FE C5			        inc     ch
+ 061F  80 E5 07			        and     ch, 00000111y
+ 0622  D2 E5			        shl     ch, cl
+ 0624  B2 8F			        mov     dl, 10001111y           ; Set background mask
+ 0626  EB 2E			        jmp     step
+				        .ENDIF
+
+				        .IF     ah == 75                ; If left arrow,
+ 0628			   *@C0032:
+ 0628  80 FC 4B		   *	    cmp    ah, 04Bh
+ 062B  75 09		   *	    jne    @C0034
+ 062D  FE C5			        inc     ch                      ;   increment bits 0-2
+ 062F  80 E5 07			        and     ch, 00000111y           ;   to next foreground color
+ 0632  B2 F8			        mov     dl, 11111000y           ; Set foreground mask
+ 0634  EB 20			        jmp     step
+				        .ENDIF
+
+				        .IF     ah == 77                ; If right arrow,
+ 0636			   *@C0034:
+ 0636  80 FC 4D		   *	    cmp    ah, 04Dh
+ 0639  75 09		   *	    jne    @C0036
+ 063B  FE CD			        dec     ch                      ;   decrement bits 0-2
+ 063D  80 E5 07			        and     ch, 00000111y           ;   to previous foreground color
+ 0640  B2 F8			        mov     dl, 11111000y           ; Set foreground mask
+ 0642  EB 12			        jmp     step
+				        .ENDIF
+
+				        .IF     ah == 80                ; If down arrow,
+ 0644			   *@C0036:
+ 0644  80 FC 50		   *	    cmp    ah, 050h
+ 0647  75 19		   *	    jne    @C0038
+ 0649  B1 04			        mov     cl, 4                   ;   decrement bits 4-6
+ 064B  D2 ED			        shr     ch, cl                  ;   to previous background color
+ 064D  FE CD			        dec     ch
+ 064F  80 E5 07			        and     ch, 00000111y
+ 0652  D2 E5			        shl     ch, cl
+ 0654  B2 8F			        mov     dl, 10001111y           ; Set background mask
+ 0656				step:
+ 0656  22 DA			        and     bl, dl                  ; Mask out fore or back bits
+ 0658  0A DD			        or      bl, ch                  ; Copy into original attribute
+ 065A  88 1E 000E R		        mov     Filsub, bl              ; Store the new submenu color
+ 065E  B1 06			        mov     cl, 6                   ; Request move operation in
+ 0660  EB 46			        jmp     switch                  ;   Colors procedure
+				        .ENDIF
+
+				; This section checks for the F or A keys; if found it checks again for
+				; a number key between 0 and 7, then inserts the correct foreground or
+				; background bit pattern into the current fill attribute.
+
+ 0662			   *@C0038:
+ 0662  2B C9			        sub     cx, cx                  ; Clear flag for foreground request
+				        .IF     al == 'A'               ; If background request,
+ 0664  3C 41		   *	    cmp    al, 'A'
+ 0666  75 03		   *	    jne    @C003A
+ 0668  41			        inc     cx                      ;   set flag for background request
+				        .ELSE
+ 0669  EB 07		   *	    jmp    @C003C
+ 066B			   *@C003A:
+				        .CONTINUE .IF al != 'F'         ; If not foreground request, continue
+ 066B  3C 46		   *	    cmp    al, 'F'
+ 066D  74 03 E9 FF39	   *	    jne    @C0027
+				        .ENDIF
+
+ 0672			   *@C003C:
+ 0672  51			        push    cx
+
+				        ; Poll for keyboard selection while updating time
+				        ; Pass row and column
+				        INVOKE  GetKeyClock, CLKROW, CLKCOL
+ 0673  33 C0		   *	    xor    ax, ax
+ 0675  50		   *	    push   ax
+ 0676  B8 003E		   *	    mov    ax, +0003Eh
+ 0679  50		   *	    push   ax
+ 067A  E8 0000 E	   *	    call   GetKeyClock
+
+ 067D  59			        pop     cx                      ; Recover flag
+
+				        .CONTINUE .IF (al < '0') || (al > '7') ; Ignore invalid key
+ 067E  3C 30		   *	    cmp    al, '0'
+ 0680  73 03 E9 FF26	   *	    jb     @C0027
+ 0685  3C 37		   *	    cmp    al, '7'
+ 0687  76 03 E9 FF1F	   *	    ja     @C0027
+
+ 068C  34 30			        xor     al, '0'                 ; Convert ASCII numeral into binary
+ 068E  B2 F8			        mov     dl, 11111000y           ; Set foreground mask
+				        .IF     cx != 0                 ; Skip if foreground request
+ 0690  0B C9		   *	    or	cx, cx
+ 0692  74 06		   *	    je     @C0040
+ 0694  B1 04			        mov     cl, 4                   ; Otherwise shift bits 0-2
+ 0696  D2 E0			        shl     al, cl                  ;   to positions 4-6
+ 0698  B2 8F			        mov     dl, 10001111y           ; Set background mask
+				        .ENDIF
+
+ 069A			   *@C0040:
+ 069A  8A 1E 000E R		        mov     bl, Filsub
+ 069E  22 DA			        and     bl, dl                  ; Mask out fore or back bits
+ 06A0  0A D8			        or      bl, al                  ; Insert number into fore or back bits
+ 06A2  88 1E 000E R		        mov     Filsub, bl              ; Store the new submenu color
+ 06A6  B1 06			        mov     cl, 6                   ; Request move
+ 06A8				switch:
+
+				        ; Set new attributes in a window
+				        ; Pass logic code (CX), attribute (BX), top, left, bottom, right
+				        INVOKE  Colors, cx, bx, 3, 12, 23, 68
+ 06A8  51		   *	    push   cx
+ 06A9  53		   *	    push   bx
+ 06AA  B8 0003		   *	    mov    ax, +00003h
+ 06AD  50		   *	    push   ax
+ 06AE  B8 000C		   *	    mov    ax, +0000Ch
+ 06B1  50		   *	    push   ax
+ 06B2  B8 0017		   *	    mov    ax, +00017h
+ 06B5  50		   *	    push   ax
+ 06B6  B8 0044		   *	    mov    ax, +00044h
+ 06B9  50		   *	    push   ax
+ 06BA  E8 0000 E	   *	    call   Colors
+
+ 06BD  B4 08			        mov     ah, 8                   ; Function 8, get char/attribute
+ 06BF  8A 3E 0001 E		        mov     bh, vconfig.dpage
+ 06C3  CD 10			        int     10h                     ; Get attribute in AH
+ 06C5  88 26 000D R		        mov     Fill, ah                ; New fill variable for main menu
+ 06C9  88 26 000E R		        mov     Filsub, ah              ;   and for submenu
+				        .ENDW
+ 06CD  E9 FEDB		   *	    jmp    @C0027
+ 06D0			   *@C0028:
+ 06D0  C3			        ret
+
+ 06D1				SetAttrs ENDP
+
+
+
+				;* ExecPgm - Executes a specified program as a child process.
+				;*
+				;* Uses:    vconfig - Video configuration structure (initialized
+				;*          by calling the GetVidConfig procedure)
+				;*          pb - Parameter block structure, declared in the DEMO.INC file
+				;*
+				;* Return:  None
+
+ 06D1				ExecPgm PROC NEAR
+
+				        Box 16, 13, 20, 67
+ 06D1  B8 0600		     1	    mov ax, 0600h                       
+ 06D4  8A 3E 0009 R	     1	    mov bh, Filmono                     
+ 06D8  80 3E 0005 E 00	   *	    cmp    vconfig . adapter, MDA
+ 06DD  74 04		   *	    je     @C0043
+ 06DF  8A 3E 0005 R	     1	    mov bh, Filcolr                     
+ 06E3			   *@C0043:
+ 06E3  B5 10		     1	    mov ch, 16
+ 06E5  B1 0D		     1	    mov cl, 13                        
+ 06E7  B6 14		     1	    mov dh, 20
+ 06E9  B2 43		     1	    mov dl, 67                        
+ 06EB  CD 10		     1	    int 10h                             
+
+				        ; Display prompt for file spec, pass row, column, and string address
+				        INVOKE StrWrite, 17, 16, ADDR ExecMsg
+ 06ED  B8 0011		   *	    mov    ax, +00011h
+ 06F0  50		   *	    push   ax
+ 06F1  B8 0010		   *	    mov    ax, +00010h
+ 06F4  50		   *	    push   ax
+ 06F5  8D 06 047D R	   *	    lea    ax, ExecMsg
+ 06F9  50		   *	    push   ax
+ 06FA  E8 0000 E	   *	    call   StrWrite
+
+				        ; Set cursor position below prompt, pass row and column
+				        INVOKE  SetCurPos, 19, 16
+ 06FD  B8 0013		   *	    mov    ax, +00013h
+ 0700  50		   *	    push   ax
+ 0701  B8 0010		   *	    mov    ax, +00010h
+ 0704  50		   *	    push   ax
+ 0705  E8 0000 E	   *	    call   SetCurPos
+
+ 0708  B4 0A			        mov     ah, 0Ah                 ; Request DOS to read keyboard
+ 070A  BA 04CF R		        mov     dx, OFFSET Fspec        ;   input into Fspec string
+ 070D  CD 21			        int     21h                     ; Read Buffered Keyboard Input
+
+				        Box 16, 13, 20, 67
+ 070F  B8 0600		     1	    mov ax, 0600h                       
+ 0712  8A 3E 0009 R	     1	    mov bh, Filmono                     
+ 0716  80 3E 0005 E 00	   *	    cmp    vconfig . adapter, MDA
+ 071B  74 04		   *	    je     @C0045
+ 071D  8A 3E 0005 R	     1	    mov bh, Filcolr                     
+ 0721			   *@C0045:
+ 0721  B5 10		     1	    mov ch, 16
+ 0723  B1 0D		     1	    mov cl, 13                        
+ 0725  B6 14		     1	    mov dh, 20
+ 0727  B2 43		     1	    mov dl, 67                        
+ 0729  CD 10		     1	    int 10h                             
+
+				        ; Display prompt for command tail
+				        INVOKE StrWrite, 17, 16, ADDR TailMsg
+ 072B  B8 0011		   *	    mov    ax, +00011h
+ 072E  50		   *	    push   ax
+ 072F  B8 0010		   *	    mov    ax, +00010h
+ 0732  50		   *	    push   ax
+ 0733  8D 06 04AF R	   *	    lea    ax, TailMsg
+ 0737  50		   *	    push   ax
+ 0738  E8 0000 E	   *	    call   StrWrite
+
+				        ; Set cursor position below prompt, pass row and column
+				        INVOKE  SetCurPos, 19, 16
+ 073B  B8 0013		   *	    mov    ax, +00013h
+ 073E  50		   *	    push   ax
+ 073F  B8 0010		   *	    mov    ax, +00010h
+ 0742  50		   *	    push   ax
+ 0743  E8 0000 E	   *	    call   SetCurPos
+
+ 0746  B4 0A			        mov     ah, 0Ah                 ; Request DOS to read keyboard
+ 0748  BA 0502 R		        mov     dx, OFFSET Tail         ;   input into tail string
+ 074B  CD 21			        int     21h                     ; Read Buffered Keyboard Input
+
+ 074D  2A FF			        sub     bh, bh                  ; Clear BH
+ 074F  BE 04CF R		        mov     si, OFFSET Fspec        ; DS:SI points to file spec string
+ 0752  8A 5C 01			        mov     bl, [si+1]              ; BL = number of chars in spec
+ 0755  C6 40 02 00		        mov     BYTE PTR [si+bx+2], 0   ; Terminate string with 0
+
+ 0759  A1 0000 E		        mov     ax, _env                ; Get segment address of environment
+ 075C  A3 057F R		        mov     pb.env, ax              ; Copy it to parameter block
+ 075F  B8 ---- R		        mov     ax, @data               ; AX points to data segment
+ 0762  8D 1E 0503 R		        lea     bx, Tail[1]             ; BX points to command-line tail
+ 0766  89 1E 0581 R		        mov     WORD PTR pb.taddr[0], bx; Copy address of command-line tail
+ 076A  A3 0583 R		        mov     WORD PTR pb.taddr[2], ax;   to parameter block
+
+ 076D  BB 0535 R		        mov     bx, OFFSET Fcblk1       ; BX points to first FCB
+ 0770  89 1E 0585 R		        mov     WORD PTR pb.fcb1[0], bx ; Copy address of first FCB
+ 0774  A3 0587 R		        mov     WORD PTR pb.fcb1[2], ax ;   to parameter block
+ 0777  BB 055A R		        mov     bx, OFFSET Fcblk2       ; BX points to second FCB
+ 077A  89 1E 0589 R		        mov     WORD PTR pb.fcb2[0], bx ; Copy address of second FCB
+ 077E  A3 058B R		        mov     WORD PTR pb.fcb2[2], ax ;   to parameter block
+
+				; At this point, the program file is specified, the command-line tail is set,
+				; and the parameter block is properly initialized. The Exec procedure will
+				; take care of loading the FCBs with command-line arguments and resetting
+				; interrupt vectors. Now blank the screen in preparation for executing the
+				; process and pass the five pointers to the Exec procedure.
+
+ 0781  B8 0600			        mov     ax, 0600h               ; AH = scroll service, AL = 0
+ 0784  B7 07			        mov     bh, 7                   ; Blank with normal attribute
+ 0786  2B C9			        sub     cx, cx                  ; From row 0, col 0
+ 0788  8A 36 0002 E		        mov     dh, vconfig.rows        ;   to bottom row
+ 078C  B2 4F			        mov     dl, 79                  ;   and rightmost column
+ 078E  CD 10			        int     10h                     ; Blank screen
+
+				        ; Set cursor at top of screen, pass row and column
+				        INVOKE  SetCurPos, 0, 0
+ 0790  33 C0		   *	    xor    ax, ax
+ 0792  50		   *	    push   ax
+ 0793  50		   *	    push   ax
+ 0794  E8 0000 E	   *	    call   SetCurPos
+
+
+				        ; Exec specified program
+				        INVOKE  Exec,
+				                ADDR Fspec[2],          ; File spec
+				                ADDR pb,                ; Parameter block structure
+				                NewBreak,               ; New handlers for CTRL+BREAK,
+				                NewCtrlC,               ;   CTRL+C,
+				                NewCritErr              ;   and Critical Error
+ 0797  8D 06 04D1 R	   *	    lea    ax, Fspec+002h
+ 079B  50		   *	    push   ax
+ 079C  8D 06 057F R	   *	    lea    ax, pb
+ 07A0  50		   *	    push   ax
+ 07A1  B8 ---- R	   *	    mov    ax, seg NewBreak
+ 07A4  50		   *	    push   ax
+ 07A5  B8 0824 R	   *	    mov    ax, word  ptr NewBreak
+ 07A8  50		   *	    push   ax
+ 07A9  B8 ---- R	   *	    mov    ax, seg NewCtrlC
+ 07AC  50		   *	    push   ax
+ 07AD  B8 082C R	   *	    mov    ax, word  ptr NewCtrlC
+ 07B0  50		   *	    push   ax
+ 07B1  B8 ---- R	   *	    mov    ax, seg NewCritErr
+ 07B4  50		   *	    push   ax
+ 07B5  B8 082D R	   *	    mov    ax, word  ptr NewCritErr
+ 07B8  50		   *	    push   ax
+ 07B9  E8 0000 E	   *	    call   Exec
+
+
+				        .IF     ax != -1                ; If successful:
+ 07BC  83 F8 FF		   *	    cmp    ax, - 001h
+ 07BF  74 5D		   *	    je     @C0047
+
+				        ; Convert return code to string
+				        ; Pass return code (AX) and address of string buffer
+				        INVOKE  BinToHex, ax, ADDR Recode
+ 07C1  50		   *	    push   ax
+ 07C2  8D 06 0477 R	   *	    lea    ax, Recode
+ 07C6  50		   *	    push   ax
+ 07C7  E8 0000 E	   *	    call   BinToHex
+
+				        ; Update video structure
+				        INVOKE  GetVidConfig
+ 07CA  E8 0000 E	   *	    call   GetVidConfig
+
+				        Box CLKROW, CLKCOL-1, CLKROW, CLKCOL+17 ; Highlight on-screen clock
+ 07CD  B8 0600		     1	    mov ax, 0600h                       
+ 07D0  8A 3E 0009 R	     1	    mov bh, Filmono                     
+ 07D4  80 3E 0005 E 00	   *	    cmp    vconfig . adapter, MDA
+ 07D9  74 04		   *	    je     @C0049
+ 07DB  8A 3E 0005 R	     1	    mov bh, Filcolr                     
+ 07DF			   *@C0049:
+ 07DF  B5 00		     1	    mov ch, CLKROW
+ 07E1  B1 3D		     1	    mov cl, CLKCOL-1                        
+ 07E3  B6 00		     1	    mov dh, CLKROW
+ 07E5  B2 4F		     1	    mov dl, CLKCOL+17                        
+ 07E7  CD 10		     1	    int 10h                             
+				        Box vconfig.rows, 0, vconfig.rows, 79   ; Highlight bottom row
+ 07E9  B8 0600		     1	    mov ax, 0600h                       
+ 07EC  8A 3E 0009 R	     1	    mov bh, Filmono                     
+ 07F0  80 3E 0005 E 00	   *	    cmp    vconfig . adapter, MDA
+ 07F5  74 04		   *	    je     @C004B
+ 07F7  8A 3E 0005 R	     1	    mov bh, Filcolr                     
+ 07FB			   *@C004B:
+ 07FB  8A 2E 0002 E	     1	    mov ch, vconfig.rows
+ 07FF  B1 00		     1	    mov cl, 0                        
+ 0801  8A 36 0002 E	     1	    mov dh, vconfig.rows
+ 0805  B2 4F		     1	    mov dl, 79                        
+ 0807  CD 10		     1	    int 10h                             
+ 0809  8A 16 0002 E		        mov     dl, vconfig.rows
+
+				        ; Display return code at bottom
+				        INVOKE StrWrite, dx, 0, ADDR RetMsg
+ 080D  52		   *	    push   dx
+ 080E  33 C0		   *	    xor    ax, ax
+ 0810  50		   *	    push   ax
+ 0811  8D 06 0469 R	   *	    lea    ax, RetMsg
+ 0815  50		   *	    push   ax
+ 0816  E8 0000 E	   *	    call   StrWrite
+
+				        ; Wait for keypress
+				        INVOKE  Press
+ 0819  E8 F947		   *	    call   Press
+				        .ELSE
+ 081C  EB 05		   *	    jmp    @C004D
+ 081E			   *@C0047:
+ 081E  B8 0E07			        mov     ax, 0E07h               ; Write ASCII 7 character
+ 0821  CD 10			        int     10h                     ;   (bell) to console
+				        .ENDIF
+ 0823			   *@C004D:
+
+ 0823  C3			        ret
+
+ 0824				ExecPgm ENDP
+
+
+
+				;* The following three procedures are primitive handlers for Interrupt 1Bh
+				;* (CTRL+BREAK), Interrupt 23h (CTRL+C), and Interrupt 24h (Critical Error).
+				;* The purpose of an interrupt handler in this context is to prevent termina-
+				;* tion of both parent and child processes when the interrupt is invoked.
+				;* Such handlers often set flags to signal to a process that the interrupt
+				;* has been called.
+
+				;* NewBreak - Handler for Interrupt 1Bh.
+
+ 0824				NewBreak PROC   FAR
+
+ 0824  FB			        sti                             ; Reenable interrupts
+ 0825  50			        push    ax                      ; Preserve AX register
+ 0826  B0 20			        mov     al, 20h                 ; Send end-of-interrupt signal
+ 0828  E6 20			        out     20h, al                 ;   to interrupt controller
+ 082A  58			        pop     ax                      ; Recover AX register
+ 082B  CF			        iret                            ; Return from handler
+				                                        ;   without taking action
+ 082C				NewBreak ENDP
+
+
+				;* NewCtrlC - Handler for Interrupt 23h.
+
+ 082C				NewCtrlC PROC   FAR
+
+ 082C  CF			        iret                            ; Return from handler
+				                                        ;   without taking action
+ 082D				NewCtrlC ENDP
+
+
+				;* NewCritErr - Handler for Interrupt 24h.
+
+ 082D				NewCritErr PROC FAR
+
+ 082D  2A C0			        sub     al, al                  ; Tell DOS to ignore error
+ 082F  CF			        iret                            ; Return from handler
+				                                        ;   without taking action
+ 0830				NewCritErr ENDP
+
+				        END
+

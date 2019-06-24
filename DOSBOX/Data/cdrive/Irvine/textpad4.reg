@@ -1,0 +1,52 @@
+REGEDIT4
+
+[HKEY_CURRENT_USER\Software\Helios\TextPad 4\Tools]
+
+[HKEY_CURRENT_USER\Software\Helios\TextPad 4\Tools\0]
+"Properties"=hex:03,00,00,00,56,80,00,00,ec,01,01,00
+"MenuText"="Compile Java"
+"Command"="javac.exe"
+"Parameters"="$File"
+"Folder"="$FileDir"
+"RE"="^\\(\\(\\(\\\\\\\\[^\\]+\\\\[^\\]+\\)\\|\\([A-Za-z]:\\)\\)[^:]+\\):\\([0-9]+\\):"
+
+[HKEY_CURRENT_USER\Software\Helios\TextPad 4\Tools\1]
+"Properties"=hex:04,00,00,00,57,80,00,00,64,00,00,00
+"MenuText"="Run Java Application"
+"Command"="java.exe"
+"Parameters"="$BaseName"
+"Folder"="$FileDir"
+"RE"=""
+
+[HKEY_CURRENT_USER\Software\Helios\TextPad 4\Tools\2]
+"Properties"=hex:05,00,00,00,58,80,00,00,44,09,00,00
+"MenuText"="Run Java Applet"
+"Command"="appletviewer.exe"
+"Parameters"="$BaseName"
+"Folder"="$FileDir"
+"RE"="^.+(\\([^:]+\\):\\([0-9]+\\)"
+
+[HKEY_CURRENT_USER\Software\Helios\TextPad 4\Tools\3]
+"Properties"=hex:00,00,00,00,59,80,00,00,c8,09,00,00
+"MenuText"="Build ASM Program"
+"Command"="C:\\MASM613\\BIN\\ML.EXE"
+"Parameters"="/Zi $File /link /co c:\\irvine\\irvine"
+"Folder"="$FileDir"
+"RE"="^\\([A-Za-z]:[^:]+\\):\\([0-9]+\\):"
+
+[HKEY_CURRENT_USER\Software\Helios\TextPad 4\Tools\4]
+"Properties"=hex:00,00,00,00,5a,80,00,00,cc,09,00,00
+"MenuText"="Debug ASM Program"
+"Command"="C:\\MASM613\\BINR\\CV.EXE"
+"Parameters"="$BaseName"
+"Folder"="$FileDir"
+"RE"="^\\([^(]+\\)(\\([0-9]+\\)):"
+
+[HKEY_CURRENT_USER\Software\Helios\TextPad 4\Tools\5]
+"Properties"=hex:00,00,00,00,5b,80,00,00,44,09,00,00
+"MenuText"="Run ASM Program"
+"Command"="C:\\Windows\\Command.com"
+"Parameters"=""
+"Folder"="$FileDir"
+"RE"="^\\([^(]+\\)(\\([0-9]+\\)):"
+

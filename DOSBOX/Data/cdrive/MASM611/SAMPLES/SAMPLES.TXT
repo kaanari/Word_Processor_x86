@@ -1,0 +1,97 @@
+                     Notes on MASM 6.11 Sample Programs
+                     (c) Copyright Microsoft Corp. 1993
+
+
+Note:      If you installed the samples during MASM 6.11 setup, you will 
+           have samples for MS-DOS, Microsoft Windows, and Microsoft 
+           Windows NT on your system. However, you need to install MASM 
+           6.11 for the appropriate operating system(s) in order to run 
+           each sample.
+
+==========================================================================
+
+Directory: SAMPLES\DEMOS
+
+Contents:  This directory includes three separate projects: FileDemo, 
+           MathDemo, and MiscDemo.  Each demonstrates the use of assembly
+           language to perform simple utility functions using MS-DOS and 
+           BIOS calls.
+
+--------------------------------------------------------------------------
+Directory: SAMPLES\DOSDEV
+
+Contents:  This sample demonstrates construction of an MS-DOS device driver. 
+           The driver can be used to exchange string data between multiple 
+           MS-DOS applications, somewhat like the Windows GlobalAtom() API. 
+           Includes the code for the device driver, an assembly-language
+           test program, and a C-language test program.
+
+Tools:     Microsoft C is required to build the C test program.
+
+--------------------------------------------------------------------------
+Directory: SAMPLES\MIXED
+
+Contents:  Demonstrates mixed-language programming with MASM and FORTRAN,
+           BASIC, and C.
+
+Tools:     A FORTRAN, BASIC, or C compiler is required to build the
+           modules written in those languages.
+
+--------------------------------------------------------------------------
+Directory: SAMPLES\PWBTUTOR
+
+Contents:  Demonstrates the Programmer's Workbench environment.  This
+           sample is intended to be used with the PWB tutorial in the
+           MASM Environment and Tools book.
+
+--------------------------------------------------------------------------
+Directory: SAMPLES\SHOW
+
+Contents:  A speedy text file browser, written entirely in assembly
+           language.
+
+--------------------------------------------------------------------------
+Directory: SAMPLES\TSR
+
+Contents:  Demonstrates how to write a terminate-and-stay-resident (TSR) 
+           utility in assembly or in mixed C and assembly language.  
+           Includes a toolkit of TSR functions that can be used to write 
+           your own TSR's.
+
+Tools:     Requires Microsoft C to build the mixed-language example.
+
+Notes:     When assembled with the /Zi switch, several modules will cause
+           a warning related to line number information in a segment of
+           class other than 'CODE'.  This is because the code in question
+           is discarded after you install the TSR, and you cannot debug it
+           using CodeView.
+
+--------------------------------------------------------------------------
+Directory: SAMPLES\WINCLOCK
+
+Contents:  A digital alarm clock for Microsoft Windows.  The left mouse
+           button moves or resizes the clock; the right button brings up
+           a menu.
+
+Tools:     Requires the Microsoft Windows SDK or Visual C++.
+
+--------------------------------------------------------------------------
+Directory: SAMPLES\WINDLL
+
+Contents:  Demonstrates writing a DLL for Microsoft Windows in assembly
+           language.  Includes a Windows test program that calls the DLL; 
+           the DLL can also be called from applications such as Microsoft
+           Visual BASIC. This sample also demonstrates the use of H2INC,
+           which converts the C header file SYSDATA.H to MASM include file
+           SYSDATA.INC.
+
+Tools:     Requires the Microsoft Windows SDK or Visual C++ to build the 
+           test program.
+
+Note:      When SYSINFO.DLL is built using Link 5.5 or later, it will
+           generate warning L4059. This warning can be ignored. It only
+           occurs in later versions of the linker and does not occur with 
+           Link 5.31 (shipped with MASM 6.11). The warning only applies 
+           to MS-DOS-overlaid programs; it is safe to ignore the warning in 
+           this case. The warning should never occur with a Windows 
+           application. 

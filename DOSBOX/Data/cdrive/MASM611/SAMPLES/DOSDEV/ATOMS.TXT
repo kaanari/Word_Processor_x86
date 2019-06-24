@@ -1,0 +1,128 @@
+To create the appropriate files for this demo, do the following:
+	To create ATOMS.SYS: 		do	ML -FeATOMS.SYS ATOMS.ASM
+	To create ATOMTEST.EXE: 	do	ML ATOMTEST.ASM
+	To create CTEST.EXE:		do	CL CTEST.C
+
+How does a device driver work? A BRIEF summary for the non-experts:
+	Devices are accessed through interrupt 21h functions. They can be 
+character or block devices. Requests from a program are converted into 
+requests to the driver by DOS. Basically, DOS takes the contents of DS, 
+DX, BX, CX, and AX, converts them and stores them in the request header 
+structure. It first calls the Driver's Strategy routine, which should 
+store the pointers to the structure so they can be used later. Then, DOS 
+calls the actual Interrupt routine, which should handle the request. The 
+device gets its data and outputs its results through the request header 
+structure.
+     	To make a request to the device, you need a handle to it. To get 
+the handle, you use the open device function. Then, to make a call you 
+put the handle in BX, and whatever other data, if applicable. The buffer 
+segment goes in DS, the buffer offset in DX, the byte count in CX, the 
+function in AX. Then do an INT 21h and you're set.
+	Every driver is initialized only once, and at that point it has to 
+tell DOS how much memory it uses (its break address). At this time it 
+also gets pointers to the CONFIG.SYS = line that loaded the driver. 
+Since the initialization function is used only once, its memory space 
+can be deallocated after its use.
+	Device drivers are usually binary images, the same format that 
+.COM files use. Therefore, you either have to use a 'TINY' model 
+directive or use a utility such as EXE2BIN to convert you program. 
+Although .EXE files can also be drivers, their use is not recommended. 
+Driver files have to start at 0000h in memory, therefore the .ORG 0000h 
+directive. They also can't have stacks. In linking you will get an 
+error saying that the tiny program doesn't start at 0100h: this is 
+normal. Only .COM files need to start at that address. The first thing 
+at address 0000h has to be the driver header. See the source code for 
+details on it.
+
+How the ATOMS device driver works:
+	The atoms driver, referenced from DOS by ATMS, is a simple driver 
+that possesses some of the functionality of environment variables. It 
+allows users to set variables in the driver's memory space, but the 
+difference is  that a variable set in the driver can be accessed by any 
+program in any other environment. They can run at different times, in 
+different Windows DOS-boxes, etc. The driver code takes less than 600 
+bytes of memory, plus whatever buffer you specify.
+	The operations the driver supports are: the DOS Initialization 
+(required for all drivers), Output Status (i.e. is there still memory 
+available), Device Open, Device Close, and of course Read (transfer from 
+the atom selected in write to a buffer) and Write. Write is the biggest 
+chunk of code and has the largest functionality: If the input string is 
+'variable', then it will search for the variable in memory and set the 
+output buffer to point to it. If the input is 'variable=', then the 
+variable is deleted from memory. If the input is 'variable=value' then 
+variable is set into the memory. A variable name can be ANY character 
+except '=', linefeed, carriage return, or '\0' (ASCII 0).
+	Some details on how the write function works: when it's doing an 
+insert, if the driver finds the variable in memory then it first checks 
+to see if there's enough space for the new size of the variable, and 
+then inserts the new atom. Also, a potential for 'race' problems exists 
+if programs are running concurrently: if a program wants to do a search 
+and it writes the request to the driver, there's a chance that another 
+program will do a read after before the original program can do it, and 
+get that program's search result.
+	The driver can be loaded with the DEVICE= or DEVICEHIGH= 
+directives in the CONFIG.SYS file. To load the driver, insert a 
+'DEVICE=[path]ATOMS.SYS' line in the file. To change the driver memory 
+from the default 1K buffer, follow the device name with a blank space 
+and a decimal number specifying the buffer size in bytes, for example, 
+'DEVICE=C:\DOS\ATOMS.SYS  4000'. Non-digit characters will be ignored. 
+	Raw vs. Cooked mode: when loaded, drivers are initially in cooked 
+mode. This means that DOS will search through input/output of the device 
+for special characters like a CTRL-C, etc. Cooked mode also means that 
+DOS will make the driver read or write one character at a time: if 
+there's a request to read 20 characters, DOS would make 20 one-character 
+requests. The Atoms driver simply cannot function in cooked mode, and 
+the first thing after you open the device should be to put the device 
+into raw mode (no translation) see the sample code for details on how to 
+do this. In C, you can do this by linking BINMODE.OBJ with the object 
+file.
+	Atoms is a sample driver, and there's lots of room to improve the 
+driver: assignments cannot reference other atoms in memory, there's no 
+way to output the whole memory buffer, and insert are somewhat 
+inefficient in that space for the new value could be made at the 
+previous location.
+	One last thing: remember you can't have a file with the same name 
+as the device driver (i.e. you can't have an atms.sys file, or an atms 
+directory).
+
+For a complete discussion of MS-DOS device drivers, check out books like 
+The MS-DOS Encyclopedia (c) 1988 Microsoft Press, or the Microsoft MS-
+DOS Programmer's Reference (c) 1991.  		      
+
+The Device Driver's Code
+	The code for the device driver can be cleanly separated into two 
+areas: Code absolutely required for device drivers, and code that is 
+required for the implementation of this device driver.
+	The Device Header, Strategy Routine, and Interrupt Routine, are 
+required for all drivers. The header specifies the link to the next 
+device (the -1 is replaced by DOS). The Attribute word identifies us as 
+a character device that supports Open and Close. The Strat and Intr 
+NPTRs tell DOS the entry points when calling the driver.
+	The Strategy routine's only function should be to store the 
+pointer to the request header , which DOS puts in ES:BX before calling 
+it.
+	The Interrupt routine is a bit more complicated: It should make 
+sure registers are preserved, call the appropriate code routine, and set 
+the status word. The typical way to handle the different request is to 
+have a Dispatch Table.
+	The rest of the code is called by the Interrupt routine.
+	The Init procedure shows the sign-on message, calls on Scan to 
+evaluate the command line, and sets the request header with the break 
+address for the pointer.
+	The Scan procedure 'scans' the command line for the number of 
+bytes to allocate.
+	The Read procedure copies from what pAtomVal is pointing to the 
+data buffer specified in the request header.
+	The Output Status procedure checks to see if there's at least one 
+more space available in the driver memory.
+	The Device Close, Open and Input Status routines simply set the 
+status word to OK.
+	The Write routine's algorithm: get the length of the source 
+buffer, find out what operation to perform, try to find a match within 
+the memory. If doing an insert, check to see if a delete is needed, then 
+insert the atom. Then, if a match was found, set pAtomVal or delete the 
+atom from memory, as necessary. 
+	The Delete routine gets an initial address and a byte count, and 
+shifts elements back according to the count.
+	The st_len routine puts the length of a string into ax.
+
