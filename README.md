@@ -1,5 +1,10 @@
 This project created for ELE336 Microprocessors and x86 Assembly course laboratory final project.
-![Homepage](img/editor.png?raw=true "Homepage")
+![Homepage](img/menu.png?raw=true "Homepage")
+![Popup](img/popup_menu.png?raw=true "Popup")
+![Editor](img/editor.png?raw=true "Editor")
+![Menu](img/editor_menu.png?raw=true "Menu")
+
+
 I named it ed. It comes from an UNIX line editor which is developed in 1969 by Ken Thompson.
 
 
